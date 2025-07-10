@@ -1,67 +1,30 @@
 # YoutubeDownloader Telegram Bot
 
-Этот проект — Telegram-бот для скачивания видео с YouTube (включая Shorts) по ссылке. Видео скачивается с помощью yt-dlp и отправляется пользователю прямо в Telegram.
+Telegram-бот для скачивания видео с YouTube, Shorts и TikTok по ссылке. Видео скачивается с помощью yt-dlp и отправляется пользователю прямо в Telegram. Поддерживает оплату через Telegram Stars и хранение пользователей в PostgreSQL.
 
 ## Возможности
 
-- Получает ссылку на YouTube-видео или Shorts
-- Скачивает видео в формате mp4
-- Отправляет скачанное видео пользователю
-- Оплата через Telegram Stars (звёзды):
-  - Разовое скачивание за 1 звезду
-  - Подписка на месяц за 30 звёзд (премиум)
+- Скачивание видео с YouTube, Shorts и TikTok по ссылке
+- Отправка видео пользователю в Telegram
+- Оплата через Telegram Stars (разовое скачивание или подписка)
 - Хранение пользователей и подписок в PostgreSQL
 
-## Быстрый старт через Docker
+## Быстрый старт через Docker Hub
 
-1. Соберите Docker-образ:
-   ```sh
-   docker build -t youtube-downloader-bot .
-   ```
-2. Запустите контейнеры с ботом и PostgreSQL:
+1. Убедитесь, что установлен Docker и docker-compose.
+2. Создайте файл `docker-compose.yml` (пример ниже).
+3. Запустите сервисы:
    ```sh
    docker-compose up -d
    ```
 
-## Переменные окружения
-
-- `TELEGRAM_BOT_TOKEN` — токен вашего Telegram-бота (обязателен)
-- `ADMIN_ID` — Telegram user ID главного администратора (опционально)
-- `DB_HOST` — адрес сервиса PostgreSQL (по умолчанию `db`)
-- `DB_PORT` — порт PostgreSQL (по умолчанию `5432`)
-- `DB_USER` — пользователь БД (по умолчанию `ytuser`)
-- `DB_PASSWORD` — пароль пользователя БД (по умолчанию `ytpass`)
-- `DB_NAME` — имя базы данных (по умолчанию `ytbot`)
-
-## Миграции базы данных
-
-Для управления схемой БД используется [goose](https://github.com/pressly/goose):
-
-- Миграции хранятся в папке `migrations/`.
-- Пример применения миграций:
-  ```sh
-  docker-compose exec bot goose -dir ./migrations postgres "host=db user=ytuser password=ytpass dbname=ytbot sslmode=disable" up
-  ```
-
-## Требования
-
-- Docker
-- Telegram-бот (создайте через @BotFather и получите токен)
-
-## Структура проекта
-
-- `main.go` — точка входа, запуск и инициализация бота
-- `internal/bot/` — основная логика Telegram-бота (инициализация, обработка сообщений, оплата, скачивание, работа с БД)
-- `internal/downloader/` — функции для скачивания видео с YouTube
-- `internal/payment/` — логика транзакций и возвратов
-- `migrations/` — миграции для PostgreSQL (таблицы пользователей и подписок)
-- `yt-dlp.exe` — бинарник для скачивания видео
-- `Dockerfile` — инструкция для сборки контейнера
-- `docker-compose.yml` — запуск бота и БД в контейнерах
+Контейнер бота будет скачан из Docker Hub: `makrotos/youtube_downloader_bot:latest`
 
 ## Пример docker-compose.yml
 
 ```yaml
+version: "3.8"
+
 services:
   db:
     image: postgres:16-alpine
@@ -77,7 +40,7 @@ services:
       - "5432:5432"
 
   bot:
-    build: .
+    image: makrotos/youtube_downloader_bot:latest
     container_name: youtube_downloader_bot
     environment:
       - TELEGRAM_BOT_TOKEN=ваш_токен_бота
@@ -86,6 +49,7 @@ services:
       - DB_USER=ytuser
       - DB_PASSWORD=ytpass
       - DB_NAME=ytbot
+      - CHANNEL_USERNAME=@your_channel_name
     depends_on:
       - db
     restart: unless-stopped
@@ -94,12 +58,35 @@ volumes:
   pgdata:
 ```
 
-## Примечания
+## Переменные окружения
 
-- Видео скачиваются во временную папку и удаляются после отправки.
-- Поддерживаются только прямые ссылки на видео или Shorts.
-- Для работы вне Docker убедитесь, что yt-dlp.exe находится в той же папке, что и main.go.
-- Для оплаты через Telegram Stars не требуется внешний provider_token — всё работает через встроенную платёжную систему Telegram.
+- `TELEGRAM_BOT_TOKEN` — токен вашего Telegram-бота (**обязателен**)
+- `DB_HOST` — адрес сервиса PostgreSQL (по умолчанию `db`)
+- `DB_PORT` — порт PostgreSQL (по умолчанию `5432`)
+- `DB_USER` — пользователь БД (по умолчанию `ytuser`)
+- `DB_PASSWORD` — пароль пользователя БД (по умолчанию `ytpass`)
+- `DB_NAME` — имя базы данных (по умолчанию `ytbot`)
+- `CHANNEL_USERNAME` — username Telegram-канала для бесплатного доступа (опционально)
+
+## Миграции базы данных
+
+Для управления схемой БД используется [goose](https://github.com/pressly/goose):
+
+- Миграции хранятся в папке `migrations/`.
+- Пример применения миграций:
+  ```sh
+  docker-compose exec bot goose -dir ./migrations postgres "host=db user=ytuser password=ytpass dbname=ytbot sslmode=disable" up
+  ```
+
+## Структура проекта
+
+- `main.go` — точка входа
+- `internal/bot/` — логика Telegram-бота
+- `internal/downloader/` — скачивание видео
+- `internal/payment/` — транзакции и подписки
+- `migrations/` — миграции PostgreSQL
+- `Dockerfile` — инструкция для сборки (если нужно)
+- `docker-compose.yml` — запуск бота и БД
 
 ---
 
