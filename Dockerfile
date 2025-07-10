@@ -4,9 +4,9 @@ WORKDIR /app
 COPY go.mod .
 COPY go.sum .
 RUN go mod download
+# Кэшируем установку goose отдельно, чтобы не тянуть лишние зависимости при изменении исходников
+RUN go install -tags 'postgres' github.com/pressly/goose/v3/cmd/goose@latest
 COPY . .
-RUN go install github.com/pressly/goose/v3/cmd/goose@latest
-# Устанавливаем goose
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o app main.go
 
 FROM debian:bookworm-slim

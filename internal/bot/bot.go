@@ -27,6 +27,7 @@ type Bot struct {
 	adminID            string
 	providerToken      string
 	transactionService *payment.TransactionService
+	channelUsername    string // username канала для подписки
 }
 
 func NewBot(token, adminID, providerToken string) (*Bot, error) {
@@ -37,11 +38,13 @@ func NewBot(token, adminID, providerToken string) (*Bot, error) {
 	if err != nil {
 		return nil, err
 	}
+	channelUsername := os.Getenv("CHANNEL_USERNAME")
 	return &Bot{
 		api:                api,
 		adminID:            adminID,
 		providerToken:      providerToken,
 		transactionService: payment.NewTransactionService(),
+		channelUsername:    channelUsername,
 	}, nil
 }
 
@@ -129,15 +132,37 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		b.sendVideo(msg.Chat.ID, url)
 		return
 	}
-	// Кнопки оплаты
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Скачать за 1 звезду", fmt.Sprintf("pay_video|%s", url)),
-			tgbotapi.NewInlineKeyboardButtonData("Подписка на месяц за 30 звёзд", "pay_subscribe"),
-		),
+	// Если задан канал, проверяем подписку
+	if b.channelUsername != "" {
+		isSub, err := b.CheckUserSubscriptionRaw(b.channelUsername, msg.From.ID)
+		if err == nil && isSub {
+			b.sendVideo(msg.Chat.ID, url)
+			return
+		}
+	}
+	// Кнопки оплаты и подписки
+	var keyboardRows [][]tgbotapi.InlineKeyboardButton
+	// Кнопки оплаты теперь в одной строке
+	payRow := tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("Скачать за 1 звезду", fmt.Sprintf("pay_video|%s", url)),
+		tgbotapi.NewInlineKeyboardButtonData("Подписка на месяц за 30 звёзд", "pay_subscribe"),
+		tgbotapi.NewInlineKeyboardButtonData("Подписка на год за 200 звёзд", "pay_subscribe_year"),
+		tgbotapi.NewInlineKeyboardButtonData("Навсегда за 1000 звёзд", "pay_subscribe_forever"),
 	)
-	msgConfig := tgbotapi.NewMessage(msg.Chat.ID, "Выберите способ оплаты:")
-	msgConfig.ReplyMarkup = keyboard
+	keyboardRows = append(keyboardRows, payRow)
+	if b.channelUsername != "" {
+		// Кнопка подписки на канал отдельной строкой
+		subscribeRow := tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("Подписаться на канал", fmt.Sprintf("https://t.me/%s", strings.TrimPrefix(b.channelUsername, "@"))),
+		)
+		keyboardRows = append(keyboardRows, subscribeRow)
+	}
+	msgText := "Выберите способ оплаты:"
+	if b.channelUsername != "" {
+		msgText = fmt.Sprintf("Подписчики канала %s могут использовать бота бесплатно!\n\n%s", b.channelUsername, msgText)
+	}
+	msgConfig := tgbotapi.NewMessage(msg.Chat.ID, msgText)
+	msgConfig.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(keyboardRows...)
 	b.api.Send(msgConfig)
 }
 
@@ -197,6 +222,14 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.api.Request(tgbotapi.NewCallback(cb.ID, "Выставлен счёт на подписку"))
 		return
 	}
+	if data == "pay_subscribe_year" {
+		err := b.sendStarsInvoice(chatID, "Подписка на год", "Оформление премиум-подписки на 365 дней", "subscribe_year", []map[string]interface{}{{"label": "Подписка на год", "amount": 200}})
+		if err != nil {
+			b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при выставлении счёта: "+err.Error()))
+		}
+		b.api.Request(tgbotapi.NewCallback(cb.ID, "Выставлен счёт на годовую подписку"))
+		return
+	}
 	if len(data) > 10 && data[:9] == "pay_video" {
 		url := data[10:]
 		err := b.sendStarsInvoice(chatID, "Скачивание видео YouTube", "Оплата 1 звезда за скачивание видео", url, []map[string]interface{}{{"label": "Скачивание", "amount": 1}})
@@ -204,6 +237,14 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 			b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при выставлении счёта: "+err.Error()))
 		}
 		b.api.Request(tgbotapi.NewCallback(cb.ID, "Выставлен счёт на скачивание"))
+		return
+	}
+	if data == "pay_subscribe_forever" {
+		err := b.sendStarsInvoice(chatID, "Подписка навсегда", "Оформление бессрочной премиум-подписки", "subscribe_forever", []map[string]interface{}{{"label": "Подписка навсегда", "amount": 1000}})
+		if err != nil {
+			b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при выставлении счёта: "+err.Error()))
+		}
+		b.api.Request(tgbotapi.NewCallback(cb.ID, "Выставлен счёт на бессрочную подписку"))
 		return
 	}
 }
@@ -285,6 +326,46 @@ func (b *Bot) setupBotProfile() error {
 	// 3. Установить аватарку (profile photo)
 	// Установка аватарки отключена по требованию
 	return nil
+}
+
+// CheckUserSubscriptionRaw проверяет подписку пользователя на канал через прямой HTTP-запрос к Bot API
+func (b *Bot) CheckUserSubscriptionRaw(channelUsername string, userID int64) (bool, error) {
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/getChatMember", b.api.Token)
+	// channelUsername должен быть в формате "@yourchannel"
+	data := map[string]interface{}{
+		"chat_id": channelUsername,
+		"user_id": userID,
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return false, fmt.Errorf("ошибка маршалинга: %w", err)
+	}
+	resp, err := http.Post(apiURL, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return false, fmt.Errorf("ошибка запроса: %w", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, fmt.Errorf("ошибка чтения ответа: %w", err)
+	}
+	var result struct {
+		Ok     bool `json:"ok"`
+		Result struct {
+			Status string `json:"status"`
+		} `json:"result"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return false, fmt.Errorf("ошибка декодирования ответа: %w", err)
+	}
+	if !result.Ok {
+		return false, fmt.Errorf("ошибка Telegram API: %v", result.Description)
+	}
+	if result.Result.Status == "member" || result.Result.Status == "administrator" || result.Result.Status == "creator" {
+		return true, nil
+	}
+	return false, nil
 }
 
 func toStr(id int64) string {
