@@ -109,9 +109,18 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		}
 		return
 	}
+
+	tiktokRegex := regexp.MustCompile(`(https?://)?(www\.)?(tiktok\.com|vm\.tiktok\.com)/[\w\-?=&#./]+`)
+	tiktokURL := tiktokRegex.FindString(msg.Text)
+	if tiktokURL != "" {
+		b.sendTikTokVideo(msg.Chat.ID, tiktokURL)
+		return
+	}
+
 	ytRegex := regexp.MustCompile(`(https?://)?(www\.)?(youtube\.com|youtu\.be)/[\w\-?=&#./]+`)
 	url := ytRegex.FindString(msg.Text)
 	if url == "" {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Не обнаружено поддерживаемой ссылки. Пожалуйста, пришлите ссылку на видео YouTube или TikTok."))
 		return
 	}
 	isVideo := false
@@ -259,6 +268,25 @@ func (b *Bot) sendVideo(chatID int64, url string) error {
 	}
 	videoFile := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filename))
 	videoFile.Caption = "Ваше видео!"
+	_, err = b.api.Send(videoFile)
+	if err != nil {
+		b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при отправке видео: "+err.Error()))
+		return err
+	}
+	os.Remove(filename)
+	return nil
+}
+
+func (b *Bot) sendTikTokVideo(chatID int64, url string) error {
+	msg := tgbotapi.NewMessage(chatID, "Скачиваю TikTok видео, пожалуйста, подождите...")
+	b.api.Send(msg)
+	filename, err := downloader.DownloadTikTokVideo(url)
+	if err != nil {
+		b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при скачивании TikTok видео: "+err.Error()))
+		return err
+	}
+	videoFile := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filename))
+	videoFile.Caption = "Ваше TikTok видео!"
 	_, err = b.api.Send(videoFile)
 	if err != nil {
 		b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при отправке видео: "+err.Error()))
