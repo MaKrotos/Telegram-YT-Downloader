@@ -4,7 +4,7 @@ go 1.24.4
 
 require (
 	github.com/lib/pq v1.10.9
-	gopkg.in/telebot.v3 v3.1.0
+	gopkg.in/telebot.v4 v4.0.0-beta.5
 )
 
 require (
