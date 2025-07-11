@@ -221,7 +221,7 @@ func (b *Bot) sendVideoInvoice(c tele.Context, url string) error {
 		Description: "Скачивание видео с YouTube за 1 звезду",
 		Payload:     "video|" + url,
 		Currency:    "XTR",
-		Prices:      []tele.Price{{Label: "Видео", Amount: 100}},
+		Prices:      []tele.Price{{Label: "Видео", Amount: 1}},
 	}
 	_, err := b.api.Send(c.Sender(), invoice, b.providerToken)
 	return err
@@ -233,7 +233,7 @@ func (b *Bot) sendTikTokInvoice(c tele.Context, url string) error {
 		Description: "Скачивание TikTok видео за 1 звезду",
 		Payload:     "tiktok|" + url,
 		Currency:    "XTR",
-		Prices:      []tele.Price{{Label: "TikTok", Amount: 100}},
+		Prices:      []tele.Price{{Label: "TikTok", Amount: 1}},
 	}
 	_, err := b.api.Send(c.Sender(), invoice, b.providerToken)
 	return err
@@ -244,15 +244,15 @@ func (b *Bot) sendSubscribeInvoice(c tele.Context, period string) error {
 	var label, desc string
 	switch period {
 	case "month":
-		price = 3000
+		price = 30
 		label = "Подписка на месяц"
 		desc = "Доступ ко всем загрузкам на 1 месяц"
 	case "year":
-		price = 20000
+		price = 200
 		label = "Подписка на год"
 		desc = "Доступ ко всем загрузкам на 1 год"
 	case "forever":
-		price = 100000
+		price = 1000
 		label = "Навсегда"
 		desc = "Пожизненный доступ ко всем загрузкам"
 	default:
