@@ -20,5 +20,7 @@ COPY --from=builder /app/yt-dlp_linux .
 COPY --from=builder /app/migrations ./migrations
 COPY --from=builder /go/bin/goose /usr/local/bin/goose
 RUN chmod +x /app/yt-dlp_linux
+# Создаем папку tmp с правильными правами доступа
+RUN mkdir -p /app/tmp && chmod 755 /app/tmp
 ENV TELEGRAM_BOT_TOKEN=""
 ENTRYPOINT sh -c "goose -dir /app/migrations postgres \"host=$DB_HOST user=$DB_USER password=$DB_PASSWORD dbname=$DB_NAME sslmode=disable\" up && /app/app" 

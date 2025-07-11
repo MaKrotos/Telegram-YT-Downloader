@@ -6,13 +6,18 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"YoutubeDownloader/internal/downloader"
 	"YoutubeDownloader/internal/payment"
+	"YoutubeDownloader/internal/storage"
+
+	"crypto/md5"
 
 	tele "gopkg.in/telebot.v4"
 )
@@ -24,7 +29,20 @@ type Bot struct {
 	transactionService *payment.TransactionService
 	channelUsername    string
 	downloadLimiter    chan struct{}
+	downloadMutex      map[string]*sync.Mutex   // Мьютекс для каждого URL
+	mutexMutex         sync.RWMutex             // Мьютекс для защиты map
+	activeDownloads    map[string]*DownloadInfo // Активные скачивания
+	downloadInfoMutex  sync.RWMutex             // Мьютекс для защиты activeDownloads
 	db                 *sql.DB
+}
+
+// DownloadInfo содержит информацию об активном скачивании
+type DownloadInfo struct {
+	RequestID string
+	UserID    int64
+	StartTime time.Time
+	Done      chan struct{} // Канал для сигнализации о завершении
+	Error     error         // Ошибка, если скачивание не удалось
 }
 
 func NewBot(token, adminID, providerToken string, db *sql.DB) (*Bot, error) {
@@ -84,6 +102,10 @@ func NewBot(token, adminID, providerToken string, db *sql.DB) (*Bot, error) {
 		transactionService: payment.NewTransactionService(),
 		channelUsername:    channelUsername,
 		downloadLimiter:    make(chan struct{}, maxWorkers),
+		downloadMutex:      make(map[string]*sync.Mutex),
+		mutexMutex:         sync.RWMutex{},
+		activeDownloads:    make(map[string]*DownloadInfo),
+		downloadInfoMutex:  sync.RWMutex{},
 		db:                 db,
 	}, nil
 }
@@ -248,6 +270,29 @@ func (b *Bot) handleMessage(c tele.Context) error {
 	// Команда для проверки настроек API
 	if msg.Text == "/api_info" && b.adminID != "" && b.adminID == toStr(msg.Sender.ID) {
 		return b.sendAPIInfo(c)
+	}
+
+	// Команды для управления кэшем
+	if msg.Text == "/cache_stats" && b.adminID != "" && b.adminID == toStr(msg.Sender.ID) {
+		return b.sendCacheStats(c)
+	}
+	if strings.HasPrefix(msg.Text, "/cache_clean ") && b.adminID != "" && b.adminID == toStr(msg.Sender.ID) {
+		parts := strings.Fields(msg.Text)
+		if len(parts) < 2 {
+			return c.Send("Укажите количество дней после /cache_clean")
+		}
+		daysStr := strings.TrimSpace(parts[1])
+		days, err := strconv.Atoi(daysStr)
+		if err != nil {
+			return c.Send("Количество дней должно быть числом")
+		}
+		return b.cleanOldCache(c, days)
+	}
+	if msg.Text == "/cache_clear" && b.adminID != "" && b.adminID == toStr(msg.Sender.ID) {
+		return b.clearAllCache(c)
+	}
+	if msg.Text == "/active_downloads" && b.adminID != "" && b.adminID == toStr(msg.Sender.ID) {
+		return b.sendActiveDownloads(c)
 	}
 
 	// --- Блок для админа ---
@@ -585,25 +630,148 @@ func (b *Bot) sendVideoWithRetry(c tele.Context, video *tele.Video, url string, 
 }
 
 func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int) {
-	log.Printf("[VIDEO] Начинаем скачивание: url=%s, charge_id=%s, amount=%d", url, chargeID, amount)
+	userID := c.Sender().ID
+	requestID := fmt.Sprintf("req_%d_%s", userID, randomString(6))
+	log.Printf("[VIDEO] [%s] Начинаем скачивание: user_id=%d, url=%s, charge_id=%s, amount=%d", requestID, userID, url, chargeID, amount)
+
+	// Сначала проверяем кэш
+	cache, err := storage.GetVideoFromCache(b.db, url)
+	if err != nil {
+		log.Printf("[VIDEO] [%s] Ошибка проверки кэша: %v", requestID, err)
+	} else if cache != nil {
+		log.Printf("[VIDEO] [%s] Найдено в кэше: file_id=%s", requestID, cache.TelegramFileID)
+
+		// Отправляем видео из кэша
+		video := &tele.Video{File: tele.File{FileID: cache.TelegramFileID}, Caption: "Ваше видео! (из кэша)"}
+		err = b.sendVideoWithRetry(c, video, url, 10)
+		if err != nil {
+			log.Printf("[VIDEO] [%s] Ошибка отправки из кэша: %v", requestID, err)
+			// Если отправка из кэша не удалась, удаляем запись из кэша и скачиваем заново
+			storage.DeleteVideoFromCache(b.db, url)
+			log.Printf("[VIDEO] [%s] Удалена запись из кэша, скачиваем заново", requestID)
+		} else {
+			log.Printf("[VIDEO] [%s] Успешно отправлено из кэша", requestID)
+			return
+		}
+	}
+
+	// Проверяем, активно ли скачивание этого URL
+	if b.isDownloadActive(url) {
+		log.Printf("[VIDEO] [%s] Обнаружено активное скачивание для URL: %s, ожидаем завершения", requestID, url)
+		c.Send("Это видео уже скачивается другим пользователем. Ожидаю завершения...")
+
+		// Ждем завершения скачивания (максимум 10 минут)
+		downloadInfo, err := b.waitForDownload(url, 10*time.Minute)
+		if err != nil {
+			log.Printf("[VIDEO] [%s] Таймаут ожидания скачивания: %v", requestID, err)
+			b.sendError(c, "Превышено время ожидания скачивания. Попробуйте позже.", err, "[TIMEOUT] "+url)
+			return
+		}
+
+		// Проверяем, была ли ошибка при скачивании
+		if downloadInfo.Error != nil {
+			log.Printf("[VIDEO] [%s] Скачивание завершилось с ошибкой: %v", requestID, downloadInfo.Error)
+			b.sendError(c, "Скачивание не удалось. Попробуйте позже.", downloadInfo.Error, "[DOWNLOAD_ERROR] "+url)
+			return
+		}
+
+		// Проверяем кэш еще раз после завершения скачивания
+		cache, err = storage.GetVideoFromCache(b.db, url)
+		if err != nil {
+			log.Printf("[VIDEO] [%s] Ошибка проверки кэша после ожидания: %v", requestID, err)
+		} else if cache != nil {
+			log.Printf("[VIDEO] [%s] Найдено в кэше после ожидания: file_id=%s", requestID, cache.TelegramFileID)
+
+			// Отправляем видео из кэша
+			video := &tele.Video{File: tele.File{FileID: cache.TelegramFileID}, Caption: "Ваше видео! (из кэша после ожидания)"}
+			err = b.sendVideoWithRetry(c, video, url, 10)
+			if err != nil {
+				log.Printf("[VIDEO] [%s] Ошибка отправки из кэша после ожидания: %v", requestID, err)
+				b.sendError(c, "Ошибка отправки видео. Попробуйте позже.", err, "[SEND_CACHE_ERROR] "+url)
+			} else {
+				log.Printf("[VIDEO] [%s] Успешно отправлено из кэша после ожидания", requestID)
+			}
+			return
+		} else {
+			log.Printf("[VIDEO] [%s] Видео не найдено в кэше после ожидания, начинаем скачивание", requestID)
+		}
+	}
+
+	// Получаем мьютекс для этого URL
+	urlMutex := b.getURLMutex(url)
+	urlMutex.Lock()
+	defer func() {
+		urlMutex.Unlock()
+		// Очищаем мьютекс через некоторое время
+		go func() {
+			time.Sleep(30 * time.Second)
+			b.cleanupURLMutex(url)
+		}()
+	}()
+
+	log.Printf("[VIDEO] [%s] Получена блокировка для URL: %s", requestID, url)
+
+	// Регистрируем начало скачивания
+	_ = b.startDownload(url, requestID, userID)
+	defer func() {
+		// Регистрируем завершение скачивания
+		b.finishDownload(url, nil)
+	}()
+
+	// Убеждаемся, что папка tmp существует
+	if err := os.MkdirAll("./tmp", 0755); err != nil {
+		log.Printf("[VIDEO] [%s] Ошибка создания папки tmp: %v", requestID, err)
+		b.sendError(c, "Ошибка подготовки к скачиванию.", err, "[TMP_DIR] "+url)
+		if chargeID != "" && amount > 0 {
+			log.Printf("[VIDEO] [%s] Возврат средств: charge_id=%s, user_id=%d, amount=%d", requestID, chargeID, userID, amount)
+			payment.RefundStarPayment(userID, chargeID, amount, "Ошибка создания временной папки")
+		}
+		return
+	}
+
 	c.Send("Скачиваю видео, пожалуйста, подождите...")
 	select {
 	case b.downloadLimiter <- struct{}{}:
-		defer func() { <-b.downloadLimiter }()
-		filename, err := downloader.DownloadYouTubeVideo(url)
+		log.Printf("[VIDEO] [%s] Получен слот для скачивания", requestID)
+		defer func() {
+			<-b.downloadLimiter
+			log.Printf("[VIDEO] [%s] Освобожден слот для скачивания", requestID)
+		}()
+
+		// Создаем уникальное имя файла с URL хешем для дополнительной изоляции
+		urlHash := fmt.Sprintf("%x", md5.Sum([]byte(url)))[:8]
+		filename, err := downloader.DownloadYouTubeVideoWithUserIDAndURL(url, userID, requestID, urlHash)
 		if err != nil {
-			log.Printf("[VIDEO] Ошибка скачивания: %v", err)
+			log.Printf("[VIDEO] [%s] Ошибка скачивания: %v", requestID, err)
 			b.sendError(c, "Произошла ошибка. Попробуйте позже.", err, "[DL] "+url)
 			if chargeID != "" && amount > 0 {
-				log.Printf("[VIDEO] Возврат средств: charge_id=%s, user_id=%d, amount=%d", chargeID, c.Sender().ID, amount)
-				payment.RefundStarPayment(c.Sender().ID, chargeID, amount, "Ошибка скачивания видео")
+				log.Printf("[VIDEO] [%s] Возврат средств: charge_id=%s, user_id=%d, amount=%d", requestID, chargeID, userID, amount)
+				payment.RefundStarPayment(userID, chargeID, amount, "Ошибка скачивания видео")
 			}
+			// Регистрируем ошибку скачивания
+			b.finishDownload(url, err)
 			return
 		}
+
+		// Проверяем, что файл действительно принадлежит этому пользователю и URL
+		expectedPrefix := fmt.Sprintf("ytvideo_user%d_%s_%s", userID, requestID, urlHash)
+		if !strings.Contains(filepath.Base(filename), expectedPrefix) {
+			log.Printf("[VIDEO] [%s] КРИТИЧЕСКАЯ ОШИБКА: файл %s не принадлежит пользователю %d или URL %s", requestID, filename, userID, url)
+			b.sendError(c, "Произошла критическая ошибка. Попробуйте позже.", fmt.Errorf("файл не принадлежит пользователю или URL"), "[FILE_OWNERSHIP] "+url)
+			if chargeID != "" && amount > 0 {
+				log.Printf("[VIDEO] [%s] Возврат средств: charge_id=%s, user_id=%d, amount=%d", requestID, chargeID, userID, amount)
+				payment.RefundStarPayment(userID, chargeID, amount, "Ошибка принадлежности файла")
+			}
+			// Регистрируем ошибку скачивания
+			b.finishDownload(url, fmt.Errorf("файл не принадлежит пользователю или URL"))
+			return
+		}
+
 		video := &tele.Video{File: tele.FromDisk(filename), Caption: "Ваше видео!"}
+		log.Printf("[VIDEO] [%s] Отправляем файл: %s", requestID, filename)
 		err = b.sendVideoWithRetry(c, video, url, 10)
 		if err != nil {
-			log.Printf("[VIDEO] Ошибка отправки: %v", err)
+			log.Printf("[VIDEO] [%s] Ошибка отправки: %v", requestID, err)
 			if info, statErr := os.Stat(filename); statErr == nil {
 				sizeMB := float64(info.Size()) / 1024.0 / 1024.0
 				b.sendError(c, "Произошла ошибка. Попробуйте позже.", err, "[SEND_VIDEO] "+url, fmt.Sprintf("Размер файла: %.2f МБ", sizeMB))
@@ -611,28 +779,164 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 				b.sendError(c, "Произошла ошибка. Попробуйте позже.", err, "[SEND_VIDEO] "+url)
 			}
 			if chargeID != "" && amount > 0 {
-				log.Printf("[VIDEO] Возврат средств: charge_id=%s, user_id=%d, amount=%d", chargeID, c.Sender().ID, amount)
-				payment.RefundStarPayment(c.Sender().ID, chargeID, amount, "Ошибка отправки видео")
+				log.Printf("[VIDEO] [%s] Возврат средств: charge_id=%s, user_id=%d, amount=%d", requestID, chargeID, userID, amount)
+				payment.RefundStarPayment(userID, chargeID, amount, "Ошибка отправки видео")
 			}
+			// Регистрируем ошибку скачивания
+			b.finishDownload(url, err)
 			return
 		}
+
+		// Сохраняем file_id в кэш
+		if video.File.FileID != "" {
+			if err := storage.SaveVideoToCache(b.db, url, video.File.FileID); err != nil {
+				log.Printf("[VIDEO] [%s] Ошибка сохранения в кэш: %v", requestID, err)
+			} else {
+				log.Printf("[VIDEO] [%s] Сохранено в кэш: file_id=%s", requestID, video.File.FileID)
+			}
+		}
+
 		os.Remove(filename)
+		log.Printf("[VIDEO] [%s] Успешно завершено скачивание для URL: %s", requestID, url)
 	default:
 		c.Send("Сейчас много загрузок. Пожалуйста, подождите и попробуйте чуть позже.")
 	}
 }
 
 func (b *Bot) sendTikTokVideo(c tele.Context, url string, chargeID string, amount int) {
+	userID := c.Sender().ID
+	requestID := fmt.Sprintf("tiktok_%d_%s", userID, randomString(6))
+	log.Printf("[TIKTOK] [%s] Начинаем скачивание: user_id=%d, url=%s, charge_id=%s, amount=%d", requestID, userID, url, chargeID, amount)
+
+	// Сначала проверяем кэш
+	cache, err := storage.GetVideoFromCache(b.db, url)
+	if err != nil {
+		log.Printf("[TIKTOK] [%s] Ошибка проверки кэша: %v", requestID, err)
+	} else if cache != nil {
+		log.Printf("[TIKTOK] [%s] Найдено в кэше: file_id=%s", requestID, cache.TelegramFileID)
+
+		// Отправляем видео из кэша
+		video := &tele.Video{File: tele.File{FileID: cache.TelegramFileID}, Caption: "Ваше TikTok видео! (из кэша)"}
+		err = b.sendVideoWithRetry(c, video, url, 10)
+		if err != nil {
+			log.Printf("[TIKTOK] [%s] Ошибка отправки из кэша: %v", requestID, err)
+			// Если отправка из кэша не удалась, удаляем запись из кэша и скачиваем заново
+			storage.DeleteVideoFromCache(b.db, url)
+			log.Printf("[TIKTOK] [%s] Удалена запись из кэша, скачиваем заново", requestID)
+		} else {
+			log.Printf("[TIKTOK] [%s] Успешно отправлено из кэша", requestID)
+			return
+		}
+	}
+
+	// Проверяем, активно ли скачивание этого URL
+	if b.isDownloadActive(url) {
+		log.Printf("[TIKTOK] [%s] Обнаружено активное скачивание для URL: %s, ожидаем завершения", requestID, url)
+		c.Send("Это TikTok видео уже скачивается другим пользователем. Ожидаю завершения...")
+
+		// Ждем завершения скачивания (максимум 10 минут)
+		downloadInfo, err := b.waitForDownload(url, 10*time.Minute)
+		if err != nil {
+			log.Printf("[TIKTOK] [%s] Таймаут ожидания скачивания: %v", requestID, err)
+			b.sendError(c, "Превышено время ожидания скачивания. Попробуйте позже.", err, "[TIMEOUT_TIKTOK] "+url)
+			return
+		}
+
+		// Проверяем, была ли ошибка при скачивании
+		if downloadInfo.Error != nil {
+			log.Printf("[TIKTOK] [%s] Скачивание завершилось с ошибкой: %v", requestID, downloadInfo.Error)
+			b.sendError(c, "Скачивание не удалось. Попробуйте позже.", downloadInfo.Error, "[DOWNLOAD_ERROR_TIKTOK] "+url)
+			return
+		}
+
+		// Проверяем кэш еще раз после завершения скачивания
+		cache, err = storage.GetVideoFromCache(b.db, url)
+		if err != nil {
+			log.Printf("[TIKTOK] [%s] Ошибка проверки кэша после ожидания: %v", requestID, err)
+		} else if cache != nil {
+			log.Printf("[TIKTOK] [%s] Найдено в кэше после ожидания: file_id=%s", requestID, cache.TelegramFileID)
+
+			// Отправляем видео из кэша
+			video := &tele.Video{File: tele.File{FileID: cache.TelegramFileID}, Caption: "Ваше TikTok видео! (из кэша после ожидания)"}
+			err = b.sendVideoWithRetry(c, video, url, 10)
+			if err != nil {
+				log.Printf("[TIKTOK] [%s] Ошибка отправки из кэша после ожидания: %v", requestID, err)
+				b.sendError(c, "Ошибка отправки TikTok видео. Попробуйте позже.", err, "[SEND_CACHE_ERROR_TIKTOK] "+url)
+			} else {
+				log.Printf("[TIKTOK] [%s] Успешно отправлено из кэша после ожидания", requestID)
+			}
+			return
+		} else {
+			log.Printf("[TIKTOK] [%s] TikTok видео не найдено в кэше после ожидания, начинаем скачивание", requestID)
+		}
+	}
+
+	// Получаем мьютекс для этого URL
+	urlMutex := b.getURLMutex(url)
+	urlMutex.Lock()
+	defer func() {
+		urlMutex.Unlock()
+		// Очищаем мьютекс через некоторое время
+		go func() {
+			time.Sleep(30 * time.Second)
+			b.cleanupURLMutex(url)
+		}()
+	}()
+
+	log.Printf("[TIKTOK] [%s] Получена блокировка для URL: %s", requestID, url)
+
+	// Регистрируем начало скачивания
+	_ = b.startDownload(url, requestID, userID)
+	defer func() {
+		// Регистрируем завершение скачивания
+		b.finishDownload(url, nil)
+	}()
+
+	// Убеждаемся, что папка tmp существует
+	if err := os.MkdirAll("./tmp", 0755); err != nil {
+		log.Printf("[TIKTOK] [%s] Ошибка создания папки tmp: %v", requestID, err)
+		b.sendError(c, "Ошибка подготовки к скачиванию TikTok.", err, "[TMP_DIR_TIKTOK] "+url)
+		if chargeID != "" && amount > 0 {
+			log.Printf("[TIKTOK] [%s] Возврат средств: charge_id=%s, user_id=%d, amount=%d", requestID, chargeID, userID, amount)
+			payment.RefundStarPayment(userID, chargeID, amount, "Ошибка создания временной папки для TikTok")
+		}
+		return
+	}
+
 	c.Send("Скачиваю TikTok видео, пожалуйста, подождите...")
 	select {
 	case b.downloadLimiter <- struct{}{}:
-		defer func() { <-b.downloadLimiter }()
-		filename, err := downloader.DownloadTikTokVideo(url)
+		log.Printf("[TIKTOK] [%s] Получен слот для скачивания", requestID)
+		defer func() {
+			<-b.downloadLimiter
+			log.Printf("[TIKTOK] [%s] Освобожден слот для скачивания", requestID)
+		}()
+
+		// Создаем уникальное имя файла с URL хешем для дополнительной изоляции
+		urlHash := fmt.Sprintf("%x", md5.Sum([]byte(url)))[:8]
+		filename, err := downloader.DownloadTikTokVideoWithUserIDAndURL(url, userID, requestID, urlHash)
 		if err != nil {
 			b.sendError(c, "Произошла ошибка. Попробуйте позже.", err, "[TikTok] "+url)
-			payment.RefundStarPayment(c.Sender().ID, chargeID, amount, "Ошибка скачивания TikTok видео")
+			payment.RefundStarPayment(userID, chargeID, amount, "Ошибка скачивания TikTok видео")
+			// Регистрируем ошибку скачивания
+			b.finishDownload(url, err)
 			return
 		}
+
+		// Проверяем, что файл действительно принадлежит этому пользователю и URL
+		expectedPrefix := fmt.Sprintf("tiktok_user%d_%s_%s", userID, requestID, urlHash)
+		if !strings.Contains(filepath.Base(filename), expectedPrefix) {
+			log.Printf("[TIKTOK] [%s] КРИТИЧЕСКАЯ ОШИБКА: файл %s не принадлежит пользователю %d или URL %s", requestID, filename, userID, url)
+			b.sendError(c, "Произошла критическая ошибка. Попробуйте позже.", fmt.Errorf("файл не принадлежит пользователю или URL"), "[FILE_OWNERSHIP_TIKTOK] "+url)
+			if chargeID != "" && amount > 0 {
+				log.Printf("[TIKTOK] [%s] Возврат средств: charge_id=%s, user_id=%d, amount=%d", requestID, chargeID, userID, amount)
+				payment.RefundStarPayment(userID, chargeID, amount, "Ошибка принадлежности TikTok файла")
+			}
+			// Регистрируем ошибку скачивания
+			b.finishDownload(url, fmt.Errorf("файл не принадлежит пользователю или URL"))
+			return
+		}
+
 		video := &tele.Video{File: tele.FromDisk(filename), Caption: "Ваше TikTok видео!"}
 		err = b.sendVideoWithRetry(c, video, url, 10)
 		if err != nil {
@@ -642,10 +946,23 @@ func (b *Bot) sendTikTokVideo(c tele.Context, url string, chargeID string, amoun
 			} else {
 				b.sendError(c, "Произошла ошибка. Попробуйте позже.", err, "[SEND_TIKTOK] "+url)
 			}
-			payment.RefundStarPayment(c.Sender().ID, chargeID, amount, "Ошибка отправки TikTok видео")
+			payment.RefundStarPayment(userID, chargeID, amount, "Ошибка отправки TikTok видео")
+			// Регистрируем ошибку скачивания
+			b.finishDownload(url, err)
 			return
 		}
+
+		// Сохраняем file_id в кэш
+		if video.File.FileID != "" {
+			if err := storage.SaveVideoToCache(b.db, url, video.File.FileID); err != nil {
+				log.Printf("[TIKTOK] [%s] Ошибка сохранения в кэш: %v", requestID, err)
+			} else {
+				log.Printf("[TIKTOK] [%s] Сохранено в кэш: file_id=%s", requestID, video.File.FileID)
+			}
+		}
+
 		os.Remove(filename)
+		log.Printf("[TIKTOK] [%s] Успешно завершено скачивание для URL: %s", requestID, url)
 	default:
 		c.Send("Сейчас много загрузок. Пожалуйста, подождите и попробуйте чуть позже.")
 	}
@@ -765,6 +1082,16 @@ func (b *Bot) sendError(c tele.Context, userMsg string, err error, extraInfo ...
 
 func toStr(id int64) string {
 	return strconv.FormatInt(id, 10)
+}
+
+// Функция для генерации случайной строки
+func randomString(n int) string {
+	letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letters[int64(i+os.Getpid()+n)%int64(len(letters))]
+	}
+	return string(b)
 }
 
 // Тестовая функция для отправки инвойса
@@ -999,4 +1326,152 @@ func getUpdateType(update *tele.Update) string {
 		return "chat_join_request"
 	}
 	return "unknown"
+}
+
+// Функция для отправки статистики кэша
+func (b *Bot) sendCacheStats(c tele.Context) error {
+	count, err := storage.GetCacheStats(b.db)
+	if err != nil {
+		return c.Send(fmt.Sprintf("Ошибка получения статистики кэша: %v", err))
+	}
+
+	info := fmt.Sprintf("📊 Статистика кэша:\n\n"+
+		"📁 Всего записей в кэше: %d\n\n"+
+		"🔧 Команды для управления:\n"+
+		"/cache_clean <дни> - удалить записи старше N дней\n"+
+		"/cache_clear - очистить весь кэш", count)
+
+	return c.Send(info)
+}
+
+// Функция для очистки старого кэша
+func (b *Bot) cleanOldCache(c tele.Context, days int) error {
+	err := storage.CleanOldCache(b.db, days)
+	if err != nil {
+		return c.Send(fmt.Sprintf("Ошибка очистки кэша: %v", err))
+	}
+
+	return c.Send(fmt.Sprintf("✅ Удалены записи из кэша старше %d дней", days))
+}
+
+// Функция для полной очистки кэша
+func (b *Bot) clearAllCache(c tele.Context) error {
+	// Удаляем все записи из кэша
+	query := `DELETE FROM video_cache`
+	_, err := b.db.Exec(query)
+	if err != nil {
+		return c.Send(fmt.Sprintf("Ошибка очистки кэша: %v", err))
+	}
+
+	return c.Send("✅ Весь кэш очищен")
+}
+
+// Функция для отправки информации об активных скачиваниях
+func (b *Bot) sendActiveDownloads(c tele.Context) error {
+	b.downloadInfoMutex.RLock()
+	defer b.downloadInfoMutex.RUnlock()
+
+	if len(b.activeDownloads) == 0 {
+		return c.Send("📊 Активных скачиваний нет")
+	}
+
+	var info strings.Builder
+	info.WriteString(fmt.Sprintf("📊 Активные скачивания (%d):\n\n", len(b.activeDownloads)))
+
+	for url, downloadInfo := range b.activeDownloads {
+		duration := time.Since(downloadInfo.StartTime)
+		info.WriteString(fmt.Sprintf("🔗 URL: %s\n", url))
+		info.WriteString(fmt.Sprintf("👤 Пользователь: %d\n", downloadInfo.UserID))
+		info.WriteString(fmt.Sprintf("🆔 Request ID: %s\n", downloadInfo.RequestID))
+		info.WriteString(fmt.Sprintf("⏱️ Длительность: %s\n", duration.Round(time.Second)))
+		info.WriteString("---\n")
+	}
+
+	return c.Send(info.String())
+}
+
+// getURLMutex возвращает мьютекс для конкретного URL
+func (b *Bot) getURLMutex(url string) *sync.Mutex {
+	b.mutexMutex.RLock()
+	mutex, exists := b.downloadMutex[url]
+	b.mutexMutex.RUnlock()
+
+	if !exists {
+		b.mutexMutex.Lock()
+		// Проверяем еще раз после получения блокировки на запись
+		if mutex, exists = b.downloadMutex[url]; !exists {
+			mutex = &sync.Mutex{}
+			b.downloadMutex[url] = mutex
+		}
+		b.mutexMutex.Unlock()
+	}
+
+	return mutex
+}
+
+// cleanupURLMutex удаляет мьютекс для URL после завершения скачивания
+func (b *Bot) cleanupURLMutex(url string) {
+	b.mutexMutex.Lock()
+	delete(b.downloadMutex, url)
+	b.mutexMutex.Unlock()
+}
+
+// startDownload регистрирует начало скачивания
+func (b *Bot) startDownload(url, requestID string, userID int64) *DownloadInfo {
+	b.downloadInfoMutex.Lock()
+	defer b.downloadInfoMutex.Unlock()
+
+	downloadInfo := &DownloadInfo{
+		RequestID: requestID,
+		UserID:    userID,
+		StartTime: time.Now(),
+		Done:      make(chan struct{}),
+	}
+
+	b.activeDownloads[url] = downloadInfo
+	log.Printf("[DOWNLOAD] [%s] Зарегистрировано активное скачивание для URL: %s", requestID, url)
+
+	return downloadInfo
+}
+
+// finishDownload регистрирует завершение скачивания
+func (b *Bot) finishDownload(url string, err error) {
+	b.downloadInfoMutex.Lock()
+	defer b.downloadInfoMutex.Unlock()
+
+	if downloadInfo, exists := b.activeDownloads[url]; exists {
+		downloadInfo.Error = err
+		close(downloadInfo.Done)
+		delete(b.activeDownloads, url)
+		log.Printf("[DOWNLOAD] [%s] Завершено скачивание для URL: %s (ошибка: %v)", downloadInfo.RequestID, url, err)
+	}
+}
+
+// waitForDownload ждет завершения активного скачивания
+func (b *Bot) waitForDownload(url string, timeout time.Duration) (*DownloadInfo, error) {
+	b.downloadInfoMutex.RLock()
+	downloadInfo, exists := b.activeDownloads[url]
+	b.downloadInfoMutex.RUnlock()
+
+	if !exists {
+		return nil, nil // Нет активного скачивания
+	}
+
+	log.Printf("[DOWNLOAD] Ожидание завершения скачивания URL: %s (начато пользователем %d)", url, downloadInfo.UserID)
+
+	select {
+	case <-downloadInfo.Done:
+		return downloadInfo, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("таймаут ожидания скачивания")
+	}
+}
+
+// isDownloadActive проверяет, активно ли скачивание для URL
+func (b *Bot) isDownloadActive(url string) bool {
+	b.downloadInfoMutex.RLock()
+	defer b.downloadInfoMutex.RUnlock()
+
+	_, exists := b.activeDownloads[url]
+	return exists
 }
