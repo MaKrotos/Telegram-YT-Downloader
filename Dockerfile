@@ -1,10 +1,10 @@
-FROM golang:1.24 AS builder
+FROM golang:1.22.4 AS builder
 WORKDIR /app
 COPY go.mod .
 COPY go.sum .
 RUN go mod download
 # Кэшируем установку goose отдельно, чтобы не тянуть лишние зависимости при изменении исходников
-RUN go install -tags 'postgres' github.com/pressly/goose/v3/cmd/goose@latest
+RUN go install -tags 'postgres' github.com/pressly/goose/v3/cmd/goose@v3.22.0
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o app main.go
 
@@ -21,4 +21,4 @@ COPY --from=builder /app/migrations ./migrations
 COPY --from=builder /go/bin/goose /usr/local/bin/goose
 RUN chmod +x /app/yt-dlp_linux
 ENV TELEGRAM_BOT_TOKEN=""
-CMD ["/app/app"] 
+ENTRYPOINT sh -c "goose -dir /app/migrations postgres \"host=$DB_HOST user=$DB_USER password=$DB_PASSWORD dbname=$DB_NAME sslmode=disable\" up && /app/app" 
