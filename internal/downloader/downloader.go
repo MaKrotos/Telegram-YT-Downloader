@@ -16,7 +16,7 @@ func DownloadYouTubeVideo(url string) (string, error) {
 	} else {
 		ytDlpPath = "./yt-dlp_linux"
 	}
-	cmd := exec.Command(ytDlpPath, "-f", "mp4", "-o", filename, url)
+	cmd := exec.Command(ytDlpPath, "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "-o", filename, url)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", errors.New("yt-dlp error: " + err.Error() + ", details: " + string(output))

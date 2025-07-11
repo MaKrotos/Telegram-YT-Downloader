@@ -27,10 +27,12 @@ type Bot struct {
 	adminID            string
 	providerToken      string
 	transactionService *payment.TransactionService
-	channelUsername    string // username канала для подписки
+	channelUsername    string        // username канала для подписки
+	downloadLimiter    chan struct{} // семафор для ограничения потоков
+	db                 *sql.DB       // база данных для кэша
 }
 
-func NewBot(token, adminID, providerToken string) (*Bot, error) {
+func NewBot(token, adminID, providerToken string, db *sql.DB) (*Bot, error) {
 	if providerToken == "" {
 		providerToken = "XTR"
 	}
@@ -39,12 +41,20 @@ func NewBot(token, adminID, providerToken string) (*Bot, error) {
 		return nil, err
 	}
 	channelUsername := os.Getenv("CHANNEL_USERNAME")
+	maxWorkers := 3 // по умолчанию
+	if mwStr := os.Getenv("MAX_DOWNLOAD_WORKERS"); mwStr != "" {
+		if mw, err := strconv.Atoi(mwStr); err == nil && mw > 0 {
+			maxWorkers = mw
+		}
+	}
 	return &Bot{
 		api:                api,
 		adminID:            adminID,
 		providerToken:      providerToken,
 		transactionService: payment.NewTransactionService(),
 		channelUsername:    channelUsername,
+		downloadLimiter:    make(chan struct{}, maxWorkers),
+		db:                 db,
 	}, nil
 }
 
@@ -110,10 +120,50 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		return
 	}
 
-	tiktokRegex := regexp.MustCompile(`(https?://)?(www\.)?(tiktok\.com|vm\.tiktok\.com)/[\w\-?=&#./]+`)
+	tiktokRegex := regexp.MustCompile(`(https?://)?(www\.)?(tiktok\.com|vm\.tiktok\.com)/[@\w\-?=&#./]+`)
 	tiktokURL := tiktokRegex.FindString(msg.Text)
 	if tiktokURL != "" {
-		b.sendTikTokVideo(msg.Chat.ID, tiktokURL)
+		// Проверка админа
+		if b.adminID != "" && b.adminID == toStr(msg.From.ID) {
+			b.sendTikTokVideo(msg.Chat.ID, tiktokURL)
+			return
+		}
+		// Проверка подписки
+		if b.channelUsername != "" {
+			isSub, err := b.CheckUserSubscriptionRaw(b.channelUsername, msg.From.ID)
+			if err == nil && isSub {
+				b.sendTikTokVideo(msg.Chat.ID, tiktokURL)
+				return
+			}
+		}
+		// Кнопки оплаты и подписки для TikTok
+		var keyboardRows [][]tgbotapi.InlineKeyboardButton
+		payRow1 := tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Скачать TikTok за 1 звезду", fmt.Sprintf("pay_tiktok|%s", tiktokURL)),
+		)
+		payRow2 := tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Подписка на месяц за 30 звёзд", "pay_subscribe"),
+		)
+		payRow3 := tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Подписка на год за 200 звёзд", "pay_subscribe_year"),
+		)
+		payRow4 := tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Навсегда за 1000 звёзд", "pay_subscribe_forever"),
+		)
+		keyboardRows = append(keyboardRows, payRow1, payRow2, payRow3, payRow4)
+		if b.channelUsername != "" {
+			subscribeRow := tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonURL("Подписаться на канал", fmt.Sprintf("https://t.me/%s", strings.TrimPrefix(b.channelUsername, "@"))),
+			)
+			keyboardRows = append(keyboardRows, subscribeRow)
+		}
+		msgText := "Выберите способ оплаты:"
+		if b.channelUsername != "" {
+			msgText = fmt.Sprintf("Подписчики канала %s могут использовать бота бесплатно!\n\n%s", b.channelUsername, msgText)
+		}
+		msgConfig := tgbotapi.NewMessage(msg.Chat.ID, msgText)
+		msgConfig.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(keyboardRows...)
+		b.api.Send(msgConfig)
 		return
 	}
 
@@ -129,6 +179,13 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	}
 	if strings.Contains(url, "/shorts/") {
 		parts := strings.Split(url, "/shorts/")
+		if len(parts) > 1 && len(parts[1]) >= 5 {
+			isVideo = true
+		}
+	}
+	// Новая проверка для коротких ссылок youtu.be
+	if strings.Contains(url, "youtu.be/") {
+		parts := strings.Split(url, "youtu.be/")
 		if len(parts) > 1 && len(parts[1]) >= 5 {
 			isVideo = true
 		}
@@ -151,14 +208,20 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	}
 	// Кнопки оплаты и подписки
 	var keyboardRows [][]tgbotapi.InlineKeyboardButton
-	// Кнопки оплаты теперь в одной строке
-	payRow := tgbotapi.NewInlineKeyboardRow(
+	// Кнопки оплаты теперь каждая в отдельной строке
+	payRow1 := tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("Скачать за 1 звезду", fmt.Sprintf("pay_video|%s", url)),
+	)
+	payRow2 := tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("Подписка на месяц за 30 звёзд", "pay_subscribe"),
+	)
+	payRow3 := tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("Подписка на год за 200 звёзд", "pay_subscribe_year"),
+	)
+	payRow4 := tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("Навсегда за 1000 звёзд", "pay_subscribe_forever"),
 	)
-	keyboardRows = append(keyboardRows, payRow)
+	keyboardRows = append(keyboardRows, payRow1, payRow2, payRow3, payRow4)
 	if b.channelUsername != "" {
 		// Кнопка подписки на канал отдельной строкой
 		subscribeRow := tgbotapi.NewInlineKeyboardRow(
@@ -180,13 +243,37 @@ func (b *Bot) handleSuccessfulPayment(msg *tgbotapi.Message) {
 	url := msg.SuccessfulPayment.InvoicePayload
 	chatID := msg.Chat.ID
 	userID := msg.From.ID
-	// Сообщаем пользователю
 	b.api.Send(tgbotapi.NewMessage(chatID, "⭐️ Платёж успешно принят! Скачиваем видео..."))
-	// Пробуем скачать и отправить видео
+	// Определяем тип ссылки
+	if strings.Contains(url, "tiktok.com") || strings.Contains(url, "vm.tiktok.com") {
+		err := b.sendTikTokVideo(chatID, url)
+		sp := msg.SuccessfulPayment
+		if err != nil {
+			log.Printf("[ERROR] Ошибка скачивания TikTok видео: %v", err)
+			errRefund := payment.RefundStarPayment(userID, sp.TelegramPaymentChargeID, sp.TotalAmount, "Не удалось скачать TikTok видео, возврат средств")
+			if errRefund != nil {
+				b.api.Send(tgbotapi.NewMessage(chatID, "❌ Не удалось скачать TikTok видео и вернуть средства. Обратитесь к администратору."))
+			} else {
+				b.api.Send(tgbotapi.NewMessage(chatID, "❌ Не удалось скачать TikTok видео. Ваши средства возвращены."))
+			}
+			return
+		}
+		trx := &payment.Transaction{
+			TelegramPaymentChargeID: sp.TelegramPaymentChargeID,
+			TelegramUserID:          userID,
+			Amount:                  sp.TotalAmount,
+			InvoicePayload:          sp.InvoicePayload,
+			Status:                  "success",
+			Type:                    "payment",
+			Reason:                  "Оплата через Telegram Stars",
+		}
+		b.transactionService.AddTransaction(trx)
+		return
+	}
+	// YouTube/Shorts
 	err := b.sendVideo(chatID, url)
 	sp := msg.SuccessfulPayment
 	if err != nil {
-		// Если не удалось — делаем возврат
 		log.Printf("[ERROR] Ошибка скачивания видео: %v", err)
 		errRefund := payment.RefundStarPayment(userID, sp.TelegramPaymentChargeID, sp.TotalAmount, "Не удалось скачать видео, возврат средств")
 		if errRefund != nil {
@@ -196,7 +283,6 @@ func (b *Bot) handleSuccessfulPayment(msg *tgbotapi.Message) {
 		}
 		return
 	}
-	// Если видео отправлено — записываем транзакцию
 	trx := &payment.Transaction{
 		TelegramPaymentChargeID: sp.TelegramPaymentChargeID,
 		TelegramUserID:          userID,
@@ -248,6 +334,15 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.api.Request(tgbotapi.NewCallback(cb.ID, "Выставлен счёт на скачивание"))
 		return
 	}
+	if len(data) > 12 && data[:10] == "pay_tiktok" {
+		url := data[11:]
+		err := b.sendStarsInvoice(chatID, "Скачивание TikTok видео", "Оплата 1 звезда за скачивание TikTok видео", url, []map[string]interface{}{{"label": "Скачивание TikTok", "amount": 1}})
+		if err != nil {
+			b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при выставлении счёта: "+err.Error()))
+		}
+		b.api.Request(tgbotapi.NewCallback(cb.ID, "Выставлен счёт на скачивание TikTok"))
+		return
+	}
 	if data == "pay_subscribe_forever" {
 		err := b.sendStarsInvoice(chatID, "Подписка навсегда", "Оформление бессрочной премиум-подписки", "subscribe_forever", []map[string]interface{}{{"label": "Подписка навсегда", "amount": 1000}})
 		if err != nil {
@@ -259,41 +354,83 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 }
 
 func (b *Bot) sendVideo(chatID int64, url string) error {
+	// Сначала ищем file_id в кэше
+	if fileID, err := b.getCachedFileID(url); err == nil && fileID != "" {
+		videoFile := tgbotapi.NewVideo(chatID, tgbotapi.FileID(fileID))
+		videoFile.Caption = "Ваше видео! (из кэша)"
+		_, err = b.api.Send(videoFile)
+		return err // Возвращаем сразу, не ждём downloadLimiter
+	}
+
 	msg := tgbotapi.NewMessage(chatID, "Скачиваю видео, пожалуйста, подождите...")
 	b.api.Send(msg)
-	filename, err := downloader.DownloadYouTubeVideo(url)
-	if err != nil {
-		b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при скачивании видео: "+err.Error()))
-		return err
+
+	select {
+	case b.downloadLimiter <- struct{}{}:
+		go func() {
+			defer func() { <-b.downloadLimiter }()
+			filename, err := downloader.DownloadYouTubeVideo(url)
+			if err != nil {
+				b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при скачивании видео: "+err.Error()))
+				return
+			}
+			videoFile := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filename))
+			videoFile.Caption = "Ваше видео!"
+			msgObj, err := b.api.Send(videoFile)
+			if err == nil {
+				if msgObj.Video != nil {
+					b.saveCachedFileID(url, msgObj.Video.FileID)
+				}
+			}
+			if err != nil {
+				b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при отправке видео: "+err.Error()))
+			}
+			os.Remove(filename)
+		}()
+		return nil
+	default:
+		b.api.Send(tgbotapi.NewMessage(chatID, "Сейчас много загрузок. Пожалуйста, подождите и попробуйте чуть позже."))
+		return fmt.Errorf("превышен лимит одновременных загрузок")
 	}
-	videoFile := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filename))
-	videoFile.Caption = "Ваше видео!"
-	_, err = b.api.Send(videoFile)
-	if err != nil {
-		b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при отправке видео: "+err.Error()))
-		return err
-	}
-	os.Remove(filename)
-	return nil
 }
 
 func (b *Bot) sendTikTokVideo(chatID int64, url string) error {
+	// Кэширование TikTok видео
+	if fileID, err := b.getCachedFileID(url); err == nil && fileID != "" {
+		videoFile := tgbotapi.NewVideo(chatID, tgbotapi.FileID(fileID))
+		videoFile.Caption = "Ваше TikTok видео! (из кэша)"
+		_, err = b.api.Send(videoFile)
+		return err
+	}
 	msg := tgbotapi.NewMessage(chatID, "Скачиваю TikTok видео, пожалуйста, подождите...")
 	b.api.Send(msg)
-	filename, err := downloader.DownloadTikTokVideo(url)
-	if err != nil {
-		b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при скачивании TikTok видео: "+err.Error()))
-		return err
+	select {
+	case b.downloadLimiter <- struct{}{}:
+		go func() {
+			defer func() { <-b.downloadLimiter }()
+			filename, err := downloader.DownloadTikTokVideo(url)
+			if err != nil {
+				b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при скачивании TikTok видео: "+err.Error()))
+				return
+			}
+			videoFile := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filename))
+			videoFile.Caption = "Ваше TikTok видео!"
+			msgObj, err := b.api.Send(videoFile)
+			if err == nil {
+				if msgObj.Video != nil {
+					b.saveCachedFileID(url, msgObj.Video.FileID)
+				}
+			}
+			if err != nil {
+				b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при отправке видео: "+err.Error()))
+			}
+			os.Remove(filename)
+		}()
+		return nil
+	default:
+		b.api.Send(tgbotapi.NewMessage(chatID, "Сейчас много загрузок. Пожалуйста, подождите и попробуйте чуть позже."))
+		return fmt.Errorf("превышен лимит одновременных загрузок")
 	}
-	videoFile := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filename))
-	videoFile.Caption = "Ваше TikTok видео!"
-	_, err = b.api.Send(videoFile)
-	if err != nil {
-		b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка при отправке видео: "+err.Error()))
-		return err
-	}
-	os.Remove(filename)
-	return nil
 }
 
 func (b *Bot) sendStarsInvoice(chatID int64, title, description, payload string, prices []map[string]interface{}) error {
@@ -394,6 +531,20 @@ func (b *Bot) CheckUserSubscriptionRaw(channelUsername string, userID int64) (bo
 		return true, nil
 	}
 	return false, nil
+}
+
+func (b *Bot) getCachedFileID(url string) (string, error) {
+	var fileID string
+	err := b.db.QueryRow("SELECT telegram_file_id FROM video_cache WHERE url = $1", url).Scan(&fileID)
+	if err != nil {
+		return "", err
+	}
+	return fileID, nil
+}
+
+func (b *Bot) saveCachedFileID(url, fileID string) error {
+	_, err := b.db.Exec("INSERT INTO video_cache (url, telegram_file_id) VALUES ($1, $2) ON CONFLICT (url) DO UPDATE SET telegram_file_id = EXCLUDED.telegram_file_id", url, fileID)
+	return err
 }
 
 func toStr(id int64) string {

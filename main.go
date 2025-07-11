@@ -1,10 +1,12 @@
 package main
 
 import (
+	"YoutubeDownloader/internal/bot"
+	"database/sql"
 	"log"
 	"os"
 
-	"YoutubeDownloader/internal/bot"
+	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -15,7 +17,20 @@ func main() {
 	adminID := os.Getenv("ADMIN_ID")
 	starsProviderToken := os.Getenv("STARS_PROVIDER_TOKEN")
 
-	tgBot, err := bot.NewBot(botToken, adminID, starsProviderToken)
+	// Подключение к базе данных
+	dbHost := os.Getenv("DB_HOST")
+	dbPort := os.Getenv("DB_PORT")
+	dbUser := os.Getenv("DB_USER")
+	dbPass := os.Getenv("DB_PASSWORD")
+	dbName := os.Getenv("DB_NAME")
+	dsn := "host=" + dbHost + " port=" + dbPort + " user=" + dbUser + " password=" + dbPass + " dbname=" + dbName + " sslmode=disable"
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		log.Fatal("Ошибка подключения к базе данных:", err)
+	}
+	defer db.Close()
+
+	tgBot, err := bot.NewBot(botToken, adminID, starsProviderToken, db)
 	if err != nil {
 		log.Fatal(err)
 	}
