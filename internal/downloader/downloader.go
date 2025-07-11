@@ -9,41 +9,53 @@ import (
 )
 
 func DownloadYouTubeVideo(url string) (string, error) {
-	filename := filepath.Join(os.TempDir(), "ytvideo_"+randomString(8)+".mp4")
+	tmpDir := "./tmp"
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return "", errors.New("не удалось создать временную папку: " + err.Error())
+	}
+	filename := filepath.Join(tmpDir, "ytvideo_"+randomString(8)+".mp4")
+	absFilename, _ := filepath.Abs(filename)
 	var ytDlpPath string
 	if runtime.GOOS == "windows" {
 		ytDlpPath = "./yt-dlp.exe"
 	} else {
 		ytDlpPath = "./yt-dlp_linux"
 	}
-	cmd := exec.Command(ytDlpPath, "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "-o", filename, url)
+	absYtDlpPath, _ := filepath.Abs(ytDlpPath)
+	cmd := exec.Command(absYtDlpPath, "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "-o", absFilename, url)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", errors.New("yt-dlp error: " + err.Error() + ", details: " + string(output))
 	}
-	if _, err := os.Stat(filename); err != nil {
-		return "", errors.New("файл не был создан: " + err.Error())
+	if _, err := os.Stat(absFilename); err != nil {
+		return "", errors.New("файл не был создан: " + err.Error() + ", yt-dlp output: " + string(output))
 	}
-	return filename, nil
+	return absFilename, nil
 }
 
 func DownloadTikTokVideo(url string) (string, error) {
-	filename := filepath.Join(os.TempDir(), "tiktok_"+randomString(8)+".mp4")
+	tmpDir := "./tmp"
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return "", errors.New("не удалось создать временную папку: " + err.Error())
+	}
+	filename := filepath.Join(tmpDir, "tiktok_"+randomString(8)+".mp4")
+	absFilename, _ := filepath.Abs(filename)
 	var ytDlpPath string
 	if runtime.GOOS == "windows" {
 		ytDlpPath = "./yt-dlp.exe"
 	} else {
 		ytDlpPath = "./yt-dlp_linux"
 	}
-	cmd := exec.Command(ytDlpPath, "-f", "mp4", "-o", filename, url)
+	absYtDlpPath, _ := filepath.Abs(ytDlpPath)
+	cmd := exec.Command(absYtDlpPath, "-f", "mp4", "-o", absFilename, url)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", errors.New("yt-dlp error: " + err.Error() + ", details: " + string(output))
 	}
-	if _, err := os.Stat(filename); err != nil {
-		return "", errors.New("файл не был создан: " + err.Error())
+	if _, err := os.Stat(absFilename); err != nil {
+		return "", errors.New("файл не был создан: " + err.Error() + ", yt-dlp output: " + string(output))
 	}
-	return filename, nil
+	return absFilename, nil
 }
 
 func randomString(n int) string {
