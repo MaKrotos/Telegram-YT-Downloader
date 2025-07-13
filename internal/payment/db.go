@@ -107,8 +107,12 @@ func GetAllTransactionsFromDB(db *sql.DB) ([]Transaction, error) {
 func CreatePendingTransaction(db *sql.DB, userID int64, amount int, url string) (int64, error) {
 	log.Printf("[DB] Создаём pending транзакцию: user_id=%d, amount=%d, url=%s", userID, amount, url)
 	var id int64
-	err := db.QueryRow(`INSERT INTO transactions (user_id, amount, status, url, created_at, updated_at) VALUES ($1, $2, $3, $4, NOW(), NOW()) RETURNING id`,
-		userID, amount, "pending", url).Scan(&id)
+
+	// Создаем invoice_payload из URL
+	invoicePayload := "video|" + url
+
+	err := db.QueryRow(`INSERT INTO transactions (user_id, amount, status, url, invoice_payload, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) RETURNING id`,
+		userID, amount, "pending", url, invoicePayload).Scan(&id)
 	if err != nil {
 		log.Printf("[DB] Ошибка создания pending транзакции: %v", err)
 		return 0, err

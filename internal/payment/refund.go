@@ -9,7 +9,7 @@ import (
 	"os"
 )
 
-// Заглушка для возврата средств через Telegram Stars
+// RefundStarPayment возвращает средства через Telegram Stars API
 func RefundStarPayment(userID int64, telegramPaymentChargeID string, amount int, reason string) error {
 	log.Printf("[RefundStarPayment] Возврат %d XTR пользователю %d, charge_id=%s, причина: %s", amount, userID, telegramPaymentChargeID, reason)
 	// Реальный возврат через Bot API

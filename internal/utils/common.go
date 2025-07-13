@@ -34,7 +34,7 @@ func CleanupTempFiles(tmpDir string) {
 			continue
 		}
 		fileName := entry.Name()
-		if (strings.HasPrefix(fileName, "ytvideo_") || strings.HasPrefix(fileName, "tiktok_")) && info.ModTime().Before(cutoff) {
+		if strings.HasPrefix(fileName, "ytvideo_") && info.ModTime().Before(cutoff) {
 			filePath := filepath.Join(tmpDir, fileName)
 			os.Remove(filePath)
 			fmt.Printf("[DOWNLOADER] Удален старый временный файл: %s\n", filePath)

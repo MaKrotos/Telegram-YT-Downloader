@@ -1,8 +1,6 @@
 package bot
 
 import (
-	"log"
-
 	tele "gopkg.in/telebot.v4"
 )
 
@@ -18,28 +16,30 @@ type updateTypeChecker struct {
 	updateType string
 }
 
-// Middleware для логирования всех апдейтов
-func (b *Bot) setupMiddleware() {
+// setupMiddlewareLegacy настраивает middleware для бота (legacy версия)
+func (b *Bot) setupMiddlewareLegacy() {
+	logger := NewLogger("MIDDLEWARE")
+
 	b.api.Use(func(next tele.HandlerFunc) tele.HandlerFunc {
 		return func(c tele.Context) error {
 			update := c.Update()
 
-			// Логируем основные типы апдейтов
-			b.logUpdate(&update)
+			// Логируем обновления
+			logger.LogUpdate(&update)
 
 			// Обрабатываем платежи прямо в middleware
 			if update.Message != nil && update.Message.Payment != nil {
-				log.Printf("[UPDATE] Найден платеж в Message: %+v", update.Message.Payment)
+				logger.Info("Найден платеж в Message: %+v", update.Message.Payment)
 				return b.handlePayment(c)
 			}
 
 			// Автоматически подтверждаем PreCheckoutQuery
 			if update.PreCheckoutQuery != nil {
-				log.Printf("[UPDATE] PreCheckoutQuery: user_id=%d", update.PreCheckoutQuery.Sender.ID)
+				logger.Info("PreCheckoutQuery: user_id=%d", update.PreCheckoutQuery.Sender.ID)
 				if err := c.Accept(); err != nil {
-					log.Printf("[PRECHECKOUT] Ошибка подтверждения: %v", err)
+					logger.Error("Ошибка подтверждения PreCheckoutQuery: %v", err)
 				} else {
-					log.Printf("[PRECHECKOUT] PreCheckoutQuery подтвержден для user_id=%d", update.PreCheckoutQuery.Sender.ID)
+					logger.Info("PreCheckoutQuery подтвержден для user_id=%d", update.PreCheckoutQuery.Sender.ID)
 				}
 				return nil // Не передаем дальше
 			}
@@ -47,22 +47,21 @@ func (b *Bot) setupMiddleware() {
 			return next(c)
 		}
 	})
+
+	logger.Info("Middleware настроен")
 }
 
-// Логирование апдейтов
-func (b *Bot) logUpdate(update *tele.Update) {
-	switch {
-	case update.Message != nil:
-		log.Printf("[UPDATE] Message: user_id=%d, text=%q", update.Message.Sender.ID, update.Message.Text)
-	case update.Callback != nil:
-		log.Printf("[UPDATE] CallbackQuery: user_id=%d, data=%q", update.Callback.Sender.ID, update.Callback.Data)
-	case update.PreCheckoutQuery != nil:
-		log.Printf("[UPDATE] PreCheckoutQuery: user_id=%d", update.PreCheckoutQuery.Sender.ID)
-	}
-}
+// handleAnyUpdateLegacy обработчик для всех типов апдейтов
+func (b *Bot) handleAnyUpdateLegacy(c tele.Context) error {
+	logger := NewLogger("LEGACY_HANDLER")
 
-// Обработчик для ВСЕХ типов апдейтов (заглушка)
-func (b *Bot) handleAnyUpdate(c tele.Context) error {
+	// Логируем необработанные апдейты для отладки
+	update := c.Update()
+	logger.Info("Получен необработанный апдейт типа: %s", getUpdateType(&update))
+
+	// Можно добавить обработку специфических типов апдейтов здесь
+	// Например, логирование, статистика, уведомления и т.д.
+
 	return nil
 }
 
