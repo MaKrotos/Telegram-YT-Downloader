@@ -33,21 +33,21 @@ func (b *Bot) sendUniversalPayKeyboard(c tele.Context, url string) error {
 	id, err := SaveTransactionToDB(b.db, trx)
 	if err != nil {
 		logger.Error("Ошибка сохранения транзакции: %v", err)
-		return c.Send("Ошибка создания платежа. Попробуйте позже.")
+		return c.Send(b.i18nManager.T(c.Sender(), "payment_error"))
 	}
 
 	// Создаем инлайн клавиатуру
 	markup := &tele.ReplyMarkup{InlineKeyboard: [][]tele.InlineButton{
 		{
 			{
-				Text: "💳 Оплатить 1 ⭐",
+				Text: b.i18nManager.T(c.Sender(), "pay_1_star"),
 				Data: CallbackPayVideo + "|" + strconv.FormatInt(id, 10),
 			},
 		},
 	}}
 
 	logger.Info("Отправлена платежная клавиатура для URL: %s", url)
-	return c.Send("🎬 Для скачивания видео необходимо оплатить 1 ⭐", markup)
+	return c.Send(b.i18nManager.T(c.Sender(), "payment_required"), markup)
 }
 
 // sendPaymentKeyboardWithSubscriptions отправляет платежную клавиатуру с опциями подписки
@@ -67,54 +67,44 @@ func (b *Bot) sendPaymentKeyboardWithSubscriptions(c tele.Context, url string) e
 	id, err := SaveTransactionToDB(b.db, trx)
 	if err != nil {
 		logger.Error("Ошибка сохранения транзакции: %v", err)
-		return c.Send("Ошибка создания платежа. Попробуйте позже.")
+		return c.Send(b.i18nManager.T(c.Sender(), "payment_error"))
 	}
 
 	// Создаем инлайн клавиатуру с опциями подписки
 	markup := &tele.ReplyMarkup{InlineKeyboard: [][]tele.InlineButton{
 		{
 			{
-				Text: "📢 ПОДПИСАТЬСЯ НА КАНАЛ (БЕСПЛАТНО)",
+				Text: b.i18nManager.T(c.Sender(), "subscribe_free"),
 				Data: "subscribe_channel",
 			},
 		},
 		{
 			{
-				Text: "💳 Оплатить 1 ⭐ за видео",
+				Text: b.i18nManager.T(c.Sender(), "pay_1_star"),
 				Data: CallbackPayVideo + "|" + strconv.FormatInt(id, 10),
 			},
 		},
 		{
 			{
-				Text: "📅 Подписка на месяц (5 ⭐)",
+				Text: b.i18nManager.T(c.Sender(), "monthly_subscription"),
 				Data: CallbackPaySubscribe,
 			},
 		},
 		{
 			{
-				Text: "📅 Подписка на год (50 ⭐)",
+				Text: b.i18nManager.T(c.Sender(), "yearly_subscription"),
 				Data: CallbackPaySubscribeYear,
 			},
 		},
 		{
 			{
-				Text: "♾️ Подписка навсегда (100 ⭐)",
+				Text: b.i18nManager.T(c.Sender(), "forever_subscription"),
 				Data: CallbackPaySubscribeForever,
 			},
 		},
 	}}
 
-	message := `🎬 Для скачивания видео выберите один из вариантов:
-
-📢 ПОДПИСАТЬСЯ НА КАНАЛ - БЕСПЛАТНО! 
-   ⬆️ Нажмите кнопку выше для бесплатного скачивания ⬆️
-
-💳 Разовое скачивание - 1 ⭐
-📅 Подписка на месяц - 5 ⭐ (безлимитные скачивания)
-📅 Подписка на год - 50 ⭐ (безлимитные скачивания)
-♾️ Подписка навсегда - 100 ⭐ (безлимитные скачивания)
-
-💡 Подписчики канала скачивают ВСЕ видео БЕСПЛАТНО!`
+	message := b.i18nManager.T(c.Sender(), "payment_options_message")
 
 	logger.Info("Отправлена платежная клавиатура с подписками для URL: %s", url)
 	return c.Send(message, markup)
@@ -125,11 +115,11 @@ func (b *Bot) sendVideoInvoiceByDB(c tele.Context, trx *payment.Transaction) err
 	logger := NewLogger("INVOICE")
 
 	invoice := &tele.Invoice{
-		Title:       "Скачивание видео",
-		Description: "Скачивание видео с YouTube и других платформ",
+		Title:       b.i18nManager.T(c.Sender(), "video_download_title"),
+		Description: b.i18nManager.T(c.Sender(), "video_download_description"),
 		Payload:     trx.InvoicePayload,
 		Currency:    "XTR",
-		Prices:      []tele.Price{{Label: "Скачивание ⭐", Amount: trx.Amount}},
+		Prices:      []tele.Price{{Label: b.i18nManager.T(c.Sender(), "download_star_label"), Amount: trx.Amount}},
 	}
 
 	logger.Info("Отправляем инвойс для видео: %s", trx.InvoicePayload)
@@ -138,7 +128,7 @@ func (b *Bot) sendVideoInvoiceByDB(c tele.Context, trx *payment.Transaction) err
 	_, err := b.api.Send(c.Sender(), invoice)
 	if err != nil {
 		logger.Error("Ошибка отправки инвойса: %v", err)
-		return c.Send(fmt.Sprintf("Ошибка отправки инвойса: %v", err))
+		return c.Send(b.i18nManager.T(c.Sender(), "invoice_error", err))
 	}
 
 	return nil
@@ -153,19 +143,19 @@ func (b *Bot) sendSubscribeInvoice(c tele.Context, period string) error {
 
 	switch period {
 	case "month":
-		title = "Подписка на месяц"
-		description = "Подписка на месяц - безлимитные скачивания"
+		title = b.i18nManager.T(c.Sender(), "subscription_month")
+		description = b.i18nManager.T(c.Sender(), "subscription_month_desc")
 		amount = 5
 	case "year":
-		title = "Подписка на год"
-		description = "Подписка на год - безлимитные скачивания"
+		title = b.i18nManager.T(c.Sender(), "subscription_year")
+		description = b.i18nManager.T(c.Sender(), "subscription_year_desc")
 		amount = 50
 	case "forever":
-		title = "Подписка навсегда"
-		description = "Подписка навсегда - безлимитные скачивания"
+		title = b.i18nManager.T(c.Sender(), "subscription_forever")
+		description = b.i18nManager.T(c.Sender(), "subscription_forever_desc")
 		amount = 100
 	default:
-		return c.Send("Неизвестный период подписки")
+		return c.Send(b.i18nManager.T(c.Sender(), "unknown_subscription"))
 	}
 
 	invoice := &tele.Invoice{
@@ -182,7 +172,7 @@ func (b *Bot) sendSubscribeInvoice(c tele.Context, period string) error {
 	_, err := b.api.Send(c.Sender(), invoice)
 	if err != nil {
 		logger.Error("Ошибка отправки инвойса подписки: %v", err)
-		return c.Send(fmt.Sprintf("Ошибка отправки инвойса: %v", err))
+		return c.Send(b.i18nManager.T(c.Sender(), "invoice_error", err))
 	}
 
 	return nil
@@ -219,16 +209,16 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 	// Проверяем, не скачивается ли уже это видео
 	if b.downloadManager.IsDownloadActive(url) {
 		logger.Info("Видео уже скачивается, ожидаем завершения")
-		c.Send("⏳ Видео уже скачивается, ожидаем завершения...")
+		c.Send(b.i18nManager.T(c.Sender(), "download_in_progress"))
 		downloadInfo, err := b.downloadManager.WaitForDownload(url, b.config.DownloadTimeout)
 		if err != nil {
 			logger.Error("Ошибка ожидания скачивания: %v", err)
-			c.Send("Произошла ошибка при ожидании скачивания видео.")
+			c.Send(b.i18nManager.T(c.Sender(), "download_wait_error"))
 			return
 		}
 		if downloadInfo != nil && downloadInfo.Error != nil {
 			logger.Error("Скачивание завершилось с ошибкой: %v", downloadInfo.Error)
-			c.Send("Произошла ошибка при скачивании видео.")
+			c.Send(b.i18nManager.T(c.Sender(), "download_error", downloadInfo.Error.Error()))
 			return
 		}
 	}
@@ -236,7 +226,7 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 	// Получаем слот для скачивания
 	if !b.downloadManager.AcquireDownloadSlot() {
 		logger.Warning("Нет свободных слотов для скачивания")
-		c.Send("Сейчас много запросов. Попробуйте позже.")
+		c.Send(b.i18nManager.T(c.Sender(), "too_many_requests"))
 		return
 	}
 	defer b.downloadManager.ReleaseDownloadSlot()
@@ -287,7 +277,7 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 	}
 
 	// Уведомляем пользователя о начале скачивания (только если видео не в кэше)
-	c.Send("⏳ Видео качается...")
+	c.Send(b.i18nManager.T(c.Sender(), "download_started"))
 
 	// Скачиваем видео
 	logger.Info("Скачиваем видео: %s", url)
@@ -295,7 +285,7 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 	if err != nil {
 		logger.Error("Ошибка скачивания видео: %v", err)
 		b.downloadManager.FinishDownload(url, err)
-		c.Send("Ошибка скачивания видео. Попробуйте позже.")
+		c.Send(b.i18nManager.T(c.Sender(), "download_error", err.Error()))
 		return
 	}
 
@@ -304,7 +294,7 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 	if err != nil {
 		logger.Error("Ошибка получения информации о видео: %v", err)
 		b.downloadManager.FinishDownload(url, err)
-		c.Send("Ошибка обработки видео.")
+		c.Send(b.i18nManager.T(c.Sender(), "download_error", err.Error()))
 		return
 	}
 
@@ -319,7 +309,7 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 		if err != nil {
 			logger.Error("Ошибка отправки видео: %v", err)
 			b.downloadManager.FinishDownload(url, err)
-			c.Send("Ошибка отправки видео.")
+			c.Send(b.i18nManager.T(c.Sender(), "send_error", err))
 			return
 		}
 

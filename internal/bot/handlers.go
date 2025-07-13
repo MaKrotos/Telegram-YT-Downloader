@@ -20,7 +20,7 @@ func (b *Bot) handleMessage(c tele.Context) error {
 
 	// Обработка команды /start
 	if msg.Text == CmdStart {
-		return c.Send(MsgWelcome)
+		return c.Send(b.i18nManager.T(msg.Sender, "welcome"))
 	}
 
 	// Проверяем, является ли пользователь админом
@@ -60,7 +60,7 @@ func (b *Bot) handleAdminCommands(c tele.Context, msg *tele.Message) (bool, erro
 	}{
 		{CmdTestInvoice, b.sendTestInvoice},
 		{CmdTestPreCheckout, func(c tele.Context) error {
-			return c.Send("Отправьте тестовый инвойс и попробуйте оплатить его для проверки PreCheckoutQuery")
+			return c.Send(b.i18nManager.T(msg.Sender, "test_precheckout_instructions"))
 		}},
 		{CmdBotInfo, b.sendBotInfo},
 		{CmdTestDirect, b.sendDirectInvoice},
@@ -115,7 +115,7 @@ func (b *Bot) handleURLMessage(c tele.Context, msg *tele.Message, isAdmin bool) 
 
 	if url == "" {
 		logger.Info("URL не найден в сообщении: %q", msg.Text)
-		return c.Send(ErrNoURLFound)
+		return c.Send(b.i18nManager.T(msg.Sender, "no_url_found"))
 	}
 
 	logger.Info("Обрабатываем URL: %s для пользователя %d (админ: %t)", url, msg.Sender.ID, isAdmin)
@@ -156,13 +156,13 @@ func (b *Bot) handleURLMessage(c tele.Context, msg *tele.Message, isAdmin bool) 
 func (b *Bot) handleCacheCleanCommand(c tele.Context, text string) error {
 	parts := strings.Fields(text)
 	if len(parts) < 2 {
-		return c.Send(ErrInvalidDaysFormat)
+		return c.Send(b.i18nManager.T(c.Sender(), "invalid_days_format"))
 	}
 
 	daysStr := strings.TrimSpace(parts[1])
 	days, err := strconv.Atoi(daysStr)
 	if err != nil {
-		return c.Send(ErrInvalidDays)
+		return c.Send(b.i18nManager.T(c.Sender(), "invalid_days"))
 	}
 
 	return b.cleanOldCache(c, days)
@@ -172,7 +172,7 @@ func (b *Bot) handleCacheCleanCommand(c tele.Context, text string) error {
 func (b *Bot) handleRefundCommand(c tele.Context, text string) error {
 	parts := strings.Fields(text)
 	if len(parts) < 2 {
-		return c.Send(ErrInvalidChargeID)
+		return c.Send(b.i18nManager.T(c.Sender(), "invalid_charge_id"))
 	}
 
 	chargeID := strings.TrimSpace(parts[1])
@@ -181,7 +181,7 @@ func (b *Bot) handleRefundCommand(c tele.Context, text string) error {
 	if len(parts) >= 3 {
 		parsed, err := strconv.ParseInt(parts[2], 10, 64)
 		if err != nil {
-			return c.Send(ErrInvalidUserID)
+			return c.Send(b.i18nManager.T(c.Sender(), "invalid_user_id"))
 		}
 		userID = parsed
 	}
@@ -237,12 +237,12 @@ func (b *Bot) handleVideoPaymentCallback(c tele.Context, data string) error {
 	idStr := strings.TrimPrefix(data, CallbackPayVideo+"|")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		return c.Send("Ошибка: некорректный id транзакции.")
+		return c.Send(b.i18nManager.T(c.Sender(), "invalid_transaction_id"))
 	}
 
 	trx, err := payment.GetTransactionByID(b.db, id)
 	if err != nil {
-		return c.Send("Ошибка: не удалось найти транзакцию.")
+		return c.Send(b.i18nManager.T(c.Sender(), "transaction_not_found"))
 	}
 
 	return b.sendVideoInvoiceByDB(c, trx)
@@ -303,7 +303,7 @@ func (b *Bot) processPayment(c tele.Context, paymentInfo *tele.Payment) error {
 	err := UpdateTransactionStatus(b.db, chargeID, "success")
 	if err != nil {
 		logger.Error("Ошибка обновления статуса транзакции: %v", err)
-		return c.Send("Ошибка обработки платежа. Попробуйте позже.")
+		return c.Send(b.i18nManager.T(c.Sender(), "error_processing_payment"))
 	}
 
 	// Логируем все транзакции после обновления
@@ -323,20 +323,20 @@ func (b *Bot) processPayment(c tele.Context, paymentInfo *tele.Payment) error {
 	}
 
 	logger.Warning("Неизвестный тип платежа: %s", payload)
-	return c.Send("Платеж обработан, но тип платежа не распознан.")
+	return c.Send(b.i18nManager.T(c.Sender(), "payment_processed"))
 }
 
 // handleVideoPayment обрабатывает платеж за видео
 func (b *Bot) handleVideoPayment(c tele.Context, payload, chargeID string, amount int) error {
 	url := strings.TrimPrefix(payload, "video|")
 	go b.sendVideo(c, url, chargeID, amount)
-	return c.Send("Платеж принят! Начинаем скачивание видео...")
+	return c.Send(b.i18nManager.T(c.Sender(), "payment_accepted"))
 }
 
 // handleSubscribePayment обрабатывает платеж за подписку
 func (b *Bot) handleSubscribePayment(c tele.Context, payload, chargeID string, amount int) error {
 	period := strings.TrimPrefix(payload, "subscribe|")
-	return c.Send(fmt.Sprintf("Платеж за подписку на %s принят! Спасибо за поддержку!", period))
+	return c.Send(b.i18nManager.T(c.Sender(), "subscription_payment_accepted", period))
 }
 
 // handleChannelSubscription обрабатывает нажатие кнопки подписки на канал
@@ -345,7 +345,7 @@ func (b *Bot) handleChannelSubscription(c tele.Context) error {
 
 	if b.config.ChannelUsername == "" {
 		logger.Warning("ChannelUsername не задан в конфиге")
-		return c.Send("❌ Ошибка: канал не настроен. Обратитесь к администратору.")
+		return c.Send(b.i18nManager.T(c.Sender(), "channel_not_configured"))
 	}
 
 	// Убираем @ если есть
@@ -354,25 +354,19 @@ func (b *Bot) handleChannelSubscription(c tele.Context) error {
 	// Создаем ссылку на канал
 	channelLink := fmt.Sprintf("https://t.me/%s", channelUsername)
 
-	message := fmt.Sprintf(`📢 Подпишитесь на наш канал для бесплатного скачивания!
-
-🔗 Ссылка на канал: %s
-
-✅ После подписки отправьте ссылку на видео снова - скачивание будет бесплатным!
-
-💡 Подписчики канала могут скачивать ВСЕ видео БЕСПЛАТНО!`, channelLink)
+	message := b.i18nManager.T(c.Sender(), "subscribe_channel_message", channelLink)
 
 	// Создаем клавиатуру с кнопкой перехода на канал
 	markup := &tele.ReplyMarkup{InlineKeyboard: [][]tele.InlineButton{
 		{
 			{
-				Text: "📢 ПЕРЕЙТИ НА КАНАЛ",
+				Text: b.i18nManager.T(c.Sender(), "go_to_channel"),
 				URL:  channelLink,
 			},
 		},
 		{
 			{
-				Text: "🔄 Я ПОДПИСАЛСЯ, ПРОВЕРИТЬ",
+				Text: b.i18nManager.T(c.Sender(), "check_subscription"),
 				Data: "check_subscription",
 			},
 		},
@@ -387,7 +381,7 @@ func (b *Bot) handleCheckSubscription(c tele.Context) error {
 
 	if b.config.ChannelUsername == "" {
 		logger.Warning("ChannelUsername не задан в конфиге")
-		return c.Send("❌ Ошибка: канал не настроен. Обратитесь к администратору.")
+		return c.Send(b.i18nManager.T(c.Sender(), "channel_not_configured"))
 	}
 
 	logger.Info("Проверяем подписку пользователя %d на канал %s", c.Sender().ID, b.config.ChannelUsername)
@@ -395,15 +389,15 @@ func (b *Bot) handleCheckSubscription(c tele.Context) error {
 	isSub, err := b.CheckUserSubscriptionRaw(b.config.ChannelUsername, c.Sender().ID)
 	if err != nil {
 		logger.Warning("Ошибка проверки подписки: %v", err)
-		return c.Send("❌ Ошибка проверки подписки. Попробуйте позже или обратитесь к администратору.")
+		return c.Send(b.i18nManager.T(c.Sender(), "channel_not_configured"))
 	}
 
 	if isSub {
 		logger.Info("Пользователь %d подписан на канал %s", c.Sender().ID, b.config.ChannelUsername)
-		return c.Send("✅ Отлично! Вы подписаны на канал! Теперь отправьте ссылку на видео - скачивание будет бесплатным!")
+		return c.Send(b.i18nManager.T(c.Sender(), "subscribed_success"))
 	} else {
 		logger.Info("Пользователь %d НЕ подписан на канал %s", c.Sender().ID, b.config.ChannelUsername)
-		return c.Send("❌ Вы еще не подписаны на канал. Пожалуйста, подпишитесь и попробуйте снова.")
+		return c.Send(b.i18nManager.T(c.Sender(), "not_subscribed"))
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 
+	"YoutubeDownloader/internal/i18n"
 	"YoutubeDownloader/internal/payment"
 
 	tele "gopkg.in/telebot.v4"
@@ -16,6 +17,15 @@ func NewBot(token, adminID, providerToken string, db *sql.DB) (*Bot, error) {
 
 	logger.Info("Инициализация бота для Telegram Stars")
 	logger.LogConfig(config)
+
+	// Инициализируем менеджер локализации
+	i18nManager := i18n.NewManager("ru")
+	if err := i18nManager.LoadTranslations("internal/i18n/translations"); err != nil {
+		logger.Error("Ошибка загрузки переводов: %v", err)
+		// Не прерываем инициализацию, используем fallback
+	} else {
+		logger.Info("Переводы загружены успешно")
+	}
 
 	// Создаем настройки для Telegram API
 	settings := tele.Settings{
@@ -50,6 +60,7 @@ func NewBot(token, adminID, providerToken string, db *sql.DB) (*Bot, error) {
 		transactionService: payment.NewTransactionService(),
 		downloadManager:    NewDownloadManager(config.MaxWorkers),
 		db:                 db,
+		i18nManager:        i18nManager,
 	}, nil
 }
 

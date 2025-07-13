@@ -17,7 +17,7 @@ func (b *Bot) sendAdminTransactionsMenu(c tele.Context) error {
 
 	transactions := b.transactionService.GetAllTransactions()
 	if len(transactions) == 0 {
-		return c.Send("Транзакций нет.")
+		return c.Send(b.i18nManager.T(c.Sender(), "no_transactions"))
 	}
 
 	var btns [][]tele.InlineButton
@@ -33,12 +33,12 @@ func (b *Bot) sendAdminTransactionsMenu(c tele.Context) error {
 	}
 
 	if len(btns) == 0 {
-		return c.Send("Нет транзакций для возврата.")
+		return c.Send(b.i18nManager.T(c.Sender(), "no_refundable_transactions"))
 	}
 
 	markup := &tele.ReplyMarkup{InlineKeyboard: btns}
 	logger.Info("Отправлено меню транзакций для админа")
-	return c.Send("Транзакции (нажмите для возврата):", markup)
+	return c.Send(b.i18nManager.T(c.Sender(), "transactions_menu"), markup)
 }
 
 // handleAdminRefund обрабатывает возврат средств админом
@@ -57,7 +57,7 @@ func (b *Bot) handleAdminRefund(c tele.Context, chargeID string) error {
 
 			b.transactionService.MarkRefunded(chargeID)
 			logger.Info("Возврат выполнен для транзакции: %s", chargeID)
-			return c.Send(fmt.Sprintf("✅ Возврат УСПЕШНО выполнен для транзакции %s\n\nПользователь: %d\nСумма: %d ⭐", chargeID, trx.TelegramUserID, trx.Amount))
+			return c.Send(b.i18nManager.T(c.Sender(), "refund_processed", chargeID))
 		}
 	}
 
@@ -69,7 +69,7 @@ func (b *Bot) handleAdminRefund(c tele.Context, chargeID string) error {
 	}
 
 	logger.Info("Попытка возврата выполнена для транзакции: %s", chargeID)
-	return c.Send(fmt.Sprintf("⚠️ Попытка возврата выполнена для транзакции %s\n\nПримечание: Транзакция не найдена в памяти бота, но возврат отправлен в Telegram", chargeID))
+	return c.Send(b.i18nManager.T(c.Sender(), "refund_attempt", chargeID))
 }
 
 // handleAdminRefundWithUserID обрабатывает возврат средств админом с указанием user_id
@@ -163,57 +163,16 @@ func (b *Bot) sendDirectInvoice(c tele.Context) error {
 
 // sendBotInfo отправляет информацию о боте
 func (b *Bot) sendBotInfo(c tele.Context) error {
-	info := fmt.Sprintf("🤖 Информация о боте:\n\n" +
-		"💡 Для работы с платежами убедитесь, что:\n" +
-		"1. Бот создан через @BotFather\n" +
-		"2. Включены платежи в настройках бота\n" +
-		"3. Используется правильная валюта (XTR)\n\n" +
-		"🔧 Команды для тестирования:\n" +
-		"/test_invoice - отправить тестовый инвойс\n" +
-		"/test_precheckout - инструкции по тестированию\n" +
-		"/api_info - информация об API\n\n" +
-		"⚠️ Если PreCheckoutQuery не приходит:\n" +
-		"1. Проверьте настройки бота в @BotFather\n" +
-		"2. Убедитесь, что платежи включены\n" +
-		"3. Попробуйте создать нового бота\n" +
-		"4. Проверьте версию библиотеки telebot\n" +
-		"5. Попробуйте переключиться на официальный API")
-
-	return c.Send(info)
+	return c.Send(b.i18nManager.T(c.Sender(), "bot_info"))
 }
 
 // sendAPIInfo отправляет информацию об API
 func (b *Bot) sendAPIInfo(c tele.Context) error {
 	var info string
 	if b.config.UseOfficialAPI {
-		info = fmt.Sprintf("🌐 Информация об API:\n\n"+
-			"✅ Используется ОФИЦИАЛЬНЫЙ Telegram Bot API\n"+
-			"URL: %s\n\n"+
-			"💡 Преимущества официального API:\n"+
-			"• Полная поддержка всех функций Telegram\n"+
-			"• Корректная обработка PreCheckoutQuery\n"+
-			"• Стабильная работа платежей\n\n"+
-			"⚠️ Ограничения:\n"+
-			"• Ограничения на размер файлов (50 МБ)\n"+
-			"• Медленная отправка больших файлов\n\n"+
-			"🔧 Для переключения на локальный API:\n"+
-			"Установите USE_OFFICIAL_API=false в .env", b.config.TelegramAPIURL)
+		info = b.i18nManager.T(c.Sender(), "api_info_official", b.config.TelegramAPIURL)
 	} else {
-		info = fmt.Sprintf("🏠 Информация об API:\n\n"+
-			"✅ Используется ЛОКАЛЬНЫЙ Telegram Bot API\n"+
-			"URL: %s\n\n"+
-			"💡 Преимущества локального API:\n"+
-			"• Поддержка больших файлов (до 2 ГБ)\n"+
-			"• Быстрая отправка файлов\n"+
-			"• Нет ограничений на размер\n\n"+
-			"⚠️ Возможные проблемы:\n"+
-			"• Неполная поддержка PreCheckoutQuery\n"+
-			"• Проблемы с платежами Telegram Stars\n"+
-			"• Нестабильная работа некоторых функций\n\n"+
-			"🔧 Для переключения на официальный API:\n"+
-			"Установите USE_OFFICIAL_API=true в .env\n\n"+
-			"💡 Рекомендация для тестирования платежей:\n"+
-			"Попробуйте официальный API", b.config.TelegramAPIURL)
+		info = b.i18nManager.T(c.Sender(), "api_info_local", b.config.TelegramAPIURL)
 	}
 
 	return c.Send(info)
@@ -229,11 +188,11 @@ func (b *Bot) sendCacheStats(c tele.Context) error {
 		return c.Send("Ошибка получения статистики кэша")
 	}
 
-	info := fmt.Sprintf("📊 Статистика кэша:\n\n"+
-		"📁 Всего записей в кэше: %d\n\n"+
-		"🔧 Команды для управления:\n"+
-		"/cache_clean <дни> - удалить записи старше N дней\n"+
-		"/cache_clear - очистить весь кэш", count)
+	// Получаем размер кэша и свободное место
+	size := "N/A"
+	free := "N/A"
+
+	info := b.i18nManager.T(c.Sender(), "cache_stats", count, size, free)
 
 	return c.Send(info)
 }
@@ -249,7 +208,7 @@ func (b *Bot) cleanOldCache(c tele.Context, days int) error {
 	}
 
 	logger.Info("Очищены записи кэша старше %d дней", days)
-	return c.Send(fmt.Sprintf("✅ Удалены записи из кэша старше %d дней", days))
+	return c.Send(b.i18nManager.T(c.Sender(), "cache_cleaned", days, 0))
 }
 
 // clearAllCache очищает весь кэш
@@ -265,7 +224,7 @@ func (b *Bot) clearAllCache(c tele.Context) error {
 	}
 
 	logger.Info("Полностью очищен кэш")
-	return c.Send("✅ Весь кэш очищен")
+	return c.Send(b.i18nManager.T(c.Sender(), "cache_cleared"))
 }
 
 // sendActiveDownloads отправляет информацию об активных скачиваниях
@@ -274,7 +233,7 @@ func (b *Bot) sendActiveDownloads(c tele.Context) error {
 
 	activeDownloads := b.downloadManager.GetActiveDownloads()
 	if len(activeDownloads) == 0 {
-		return c.Send("Активных скачиваний нет.")
+		return c.Send(b.i18nManager.T(c.Sender(), "no_active_downloads"))
 	}
 
 	var info strings.Builder
@@ -311,7 +270,7 @@ func (b *Bot) testSubscription(c tele.Context) error {
 	logger := NewLogger("TEST_SUBSCRIPTION")
 
 	if b.config.ChannelUsername == "" {
-		return c.Send("❌ Канал не настроен в конфигурации")
+		return c.Send(b.i18nManager.T(c.Sender(), "channel_not_configured"))
 	}
 
 	userID := c.Sender().ID
@@ -337,7 +296,7 @@ func (b *Bot) testChannel(c tele.Context) error {
 	logger := NewLogger("TEST_CHANNEL")
 
 	if b.config.ChannelUsername == "" {
-		return c.Send("❌ Канал не настроен в конфигурации")
+		return c.Send(b.i18nManager.T(c.Sender(), "channel_not_configured"))
 	}
 
 	logger.Info("Тестируем доступ к каналу %s", b.config.ChannelUsername)
@@ -373,8 +332,7 @@ func (b *Bot) testChannel(c tele.Context) error {
 func (b *Bot) showConfig(c tele.Context) error {
 	logger := NewLogger("CONFIG")
 
-	info := fmt.Sprintf("⚙️ Конфигурация бота:\n\n"+
-		"🤖 Admin ID: %s\n"+
+	configInfo := fmt.Sprintf("🤖 Admin ID: %s\n"+
 		"📢 Channel Username: %s\n"+
 		"🌐 Use Official API: %t\n"+
 		"🔗 API URL: %s\n"+
@@ -388,6 +346,8 @@ func (b *Bot) showConfig(c tele.Context) error {
 		b.config.MaxWorkers,
 		b.config.HTTPTimeout,
 		b.config.DownloadTimeout)
+
+	info := b.i18nManager.T(c.Sender(), "config_info", configInfo)
 
 	logger.Info("Показана конфигурация бота")
 	return c.Send(info)

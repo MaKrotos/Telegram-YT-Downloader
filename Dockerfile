@@ -18,6 +18,7 @@ COPY --from=builder /app/app .
 COPY --from=builder /app/main.go .
 COPY --from=builder /app/yt-dlp_linux .
 COPY --from=builder /app/migrations ./migrations
+COPY --from=builder /app/internal/i18n/translations ./internal/i18n/translations
 COPY --from=builder /go/bin/goose /usr/local/bin/goose
 RUN chmod +x /app/yt-dlp_linux
 # Создаем папку tmp с правильными правами доступа

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"YoutubeDownloader/internal/i18n"
 	"YoutubeDownloader/internal/payment"
 
 	tele "gopkg.in/telebot.v4"
@@ -30,6 +31,7 @@ type Bot struct {
 	transactionService *payment.TransactionService
 	downloadManager    *DownloadManager
 	db                 *sql.DB
+	i18nManager        *i18n.Manager
 }
 
 // DownloadManager управляет скачиваниями
@@ -108,20 +110,4 @@ const (
 	CallbackPayVideo            = "pay_video"
 
 	CallbackAdminRefund = "admin_refund"
-)
-
-// Error messages
-const (
-	ErrNoURLFound        = "Не обнаружено ссылки. Пожалуйста, пришлите ссылку на видео."
-	ErrInvalidDays       = "Количество дней должно быть числом"
-	ErrInvalidUserID     = "user_id должен быть числом"
-	ErrInvalidChargeID   = "Укажите charge_id после /refund"
-	ErrInvalidDaysFormat = "Укажите количество дней после /cache_clean"
-)
-
-// Success messages
-const (
-	MsgWelcome       = "👋 Добро пожаловать!\n\nЭтот бот позволяет скачивать видео с разных сайтов за Telegram Stars. Просто отправьте ссылку на видео!"
-	MsgRefundSuccess = "Возврат выполнен для транзакции: %s"
-	MsgRefundAttempt = "Попытка возврата выполнена для транзакции: %s"
 )
