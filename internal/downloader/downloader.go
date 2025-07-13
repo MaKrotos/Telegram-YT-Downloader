@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"YoutubeDownloader/internal/utils"
 	"errors"
 	"fmt"
 	"os"
@@ -8,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 )
 
 func DownloadYouTubeVideo(url string) (string, error) {
@@ -18,14 +18,14 @@ func DownloadYouTubeVideo(url string) (string, error) {
 	}
 
 	// Очищаем старые временные файлы
-	cleanupTempFiles(tmpDir)
+	utils.CleanupTempFiles(tmpDir)
 
 	// Диагностируем файловую систему
-	if err := diagnoseFileSystem(tmpDir); err != nil {
+	if err := utils.DiagnoseFileSystem(tmpDir); err != nil {
 		return "", fmt.Errorf("проблемы с файловой системой: %v", err)
 	}
 
-	filename := filepath.Join(tmpDir, "ytvideo_"+randomString(8)+".mp4")
+	filename := filepath.Join(tmpDir, "ytvideo_"+utils.RandomString(8)+".mp4")
 	absFilename, _ := filepath.Abs(filename)
 
 	var ytDlpPath string
@@ -100,14 +100,14 @@ func DownloadTikTokVideo(url string) (string, error) {
 	}
 
 	// Очищаем старые временные файлы
-	cleanupTempFiles(tmpDir)
+	utils.CleanupTempFiles(tmpDir)
 
 	// Диагностируем файловую систему
-	if err := diagnoseFileSystem(tmpDir); err != nil {
+	if err := utils.DiagnoseFileSystem(tmpDir); err != nil {
 		return "", fmt.Errorf("проблемы с файловой системой для TikTok: %v", err)
 	}
 
-	filename := filepath.Join(tmpDir, "tiktok_"+randomString(8)+".mp4")
+	filename := filepath.Join(tmpDir, "tiktok_"+utils.RandomString(8)+".mp4")
 	absFilename, _ := filepath.Abs(filename)
 
 	var ytDlpPath string
@@ -183,10 +183,10 @@ func DownloadYouTubeVideoWithUserID(url string, userID int64, requestID string) 
 	}
 
 	// Очищаем старые временные файлы
-	cleanupTempFiles(tmpDir)
+	utils.CleanupTempFiles(tmpDir)
 
 	// Диагностируем файловую систему
-	if err := diagnoseFileSystem(tmpDir); err != nil {
+	if err := utils.DiagnoseFileSystem(tmpDir); err != nil {
 		return "", fmt.Errorf("проблемы с файловой системой: %v", err)
 	}
 
@@ -267,10 +267,10 @@ func DownloadTikTokVideoWithUserID(url string, userID int64, requestID string) (
 	}
 
 	// Очищаем старые временные файлы
-	cleanupTempFiles(tmpDir)
+	utils.CleanupTempFiles(tmpDir)
 
 	// Диагностируем файловую систему
-	if err := diagnoseFileSystem(tmpDir); err != nil {
+	if err := utils.DiagnoseFileSystem(tmpDir); err != nil {
 		return "", fmt.Errorf("проблемы с файловой системой для TikTok: %v", err)
 	}
 
@@ -351,10 +351,10 @@ func DownloadYouTubeVideoWithUserIDAndURL(url string, userID int64, requestID st
 	}
 
 	// Очищаем старые временные файлы
-	cleanupTempFiles(tmpDir)
+	utils.CleanupTempFiles(tmpDir)
 
 	// Диагностируем файловую систему
-	if err := diagnoseFileSystem(tmpDir); err != nil {
+	if err := utils.DiagnoseFileSystem(tmpDir); err != nil {
 		return "", fmt.Errorf("проблемы с файловой системой: %v", err)
 	}
 
@@ -435,10 +435,10 @@ func DownloadTikTokVideoWithUserIDAndURL(url string, userID int64, requestID str
 	}
 
 	// Очищаем старые временные файлы
-	cleanupTempFiles(tmpDir)
+	utils.CleanupTempFiles(tmpDir)
 
 	// Диагностируем файловую систему
-	if err := diagnoseFileSystem(tmpDir); err != nil {
+	if err := utils.DiagnoseFileSystem(tmpDir); err != nil {
 		return "", fmt.Errorf("проблемы с файловой системой для TikTok: %v", err)
 	}
 
@@ -509,91 +509,4 @@ func DownloadTikTokVideoWithUserIDAndURL(url string, userID int64, requestID str
 	}
 
 	return "", fmt.Errorf("все TikTok стратегии скачивания не удались для пользователя %d (request %s, URL %s). Последняя ошибка: %v", userID, requestID, urlHash, lastError)
-}
-
-// Функция для очистки старых временных файлов
-func cleanupTempFiles(tmpDir string) {
-	// Удаляем файлы старше 1 часа
-	entries, err := os.ReadDir(tmpDir)
-	if err != nil {
-		return
-	}
-
-	cutoff := time.Now().Add(-1 * time.Hour)
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-
-		// Удаляем только файлы, которые мы создаем (с префиксами ytvideo_, tiktok_)
-		fileName := entry.Name()
-		if (strings.HasPrefix(fileName, "ytvideo_") || strings.HasPrefix(fileName, "tiktok_")) && info.ModTime().Before(cutoff) {
-			filePath := filepath.Join(tmpDir, fileName)
-			os.Remove(filePath)
-			fmt.Printf("[DOWNLOADER] Удален старый временный файл: %s\n", filePath)
-		}
-	}
-}
-
-// Функция для диагностики проблем с файловой системой
-func diagnoseFileSystem(tmpDir string) error {
-	// Проверяем, существует ли папка
-	if _, err := os.Stat(tmpDir); os.IsNotExist(err) {
-		return fmt.Errorf("папка %s не существует", tmpDir)
-	}
-
-	// Проверяем права доступа
-	if err := os.MkdirAll(tmpDir, 0755); err != nil {
-		return fmt.Errorf("не удалось создать/проверить папку %s: %v", tmpDir, err)
-	}
-
-	// Пробуем создать тестовый файл
-	testFile := filepath.Join(tmpDir, "test_"+randomString(4)+".tmp")
-	testContent := []byte("test")
-
-	if err := os.WriteFile(testFile, testContent, 0644); err != nil {
-		return fmt.Errorf("не удалось создать тестовый файл в %s: %v", tmpDir, err)
-	}
-
-	// Проверяем, что файл создался
-	if _, err := os.Stat(testFile); err != nil {
-		return fmt.Errorf("тестовый файл не найден после создания: %v", err)
-	}
-
-	// Удаляем тестовый файл
-	if err := os.Remove(testFile); err != nil {
-		return fmt.Errorf("не удалось удалить тестовый файл: %v", err)
-	}
-
-	// Проверяем свободное место (упрощенная версия)
-	// Пробуем создать файл размером 1 МБ для проверки места
-	testLargeFile := filepath.Join(tmpDir, "test_large_"+randomString(4)+".tmp")
-	testLargeContent := make([]byte, 1024*1024) // 1 МБ
-
-	if err := os.WriteFile(testLargeFile, testLargeContent, 0644); err != nil {
-		return fmt.Errorf("недостаточно места на диске или проблемы с правами доступа: %v", err)
-	}
-
-	// Удаляем тестовый файл
-	if err := os.Remove(testLargeFile); err != nil {
-		return fmt.Errorf("не удалось удалить тестовый файл: %v", err)
-	}
-
-	fmt.Printf("[DOWNLOADER] Диагностика файловой системы: OK (достаточно места для скачивания)\n")
-	return nil
-}
-
-func randomString(n int) string {
-	letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-	b := make([]rune, n)
-	for i := range b {
-		b[i] = letters[int64(i+os.Getpid()+n)%int64(len(letters))]
-	}
-	return string(b)
 }
