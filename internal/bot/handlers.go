@@ -53,33 +53,33 @@ func (b *Bot) handleMessage(c tele.Context) error {
 // handleAdminCommands обрабатывает админские команды
 // Возвращает (обработана_ли_команда, ошибка)
 func (b *Bot) handleAdminCommands(c tele.Context, msg *tele.Message) (bool, error) {
-	switch msg.Text {
-	case CmdTestInvoice:
-		return true, b.sendTestInvoice(c)
-	case CmdTestPreCheckout:
-		return true, c.Send("Отправьте тестовый инвойс и попробуйте оплатить его для проверки PreCheckoutQuery")
-	case CmdBotInfo:
-		return true, b.sendBotInfo(c)
-	case CmdTestDirect:
-		return true, b.sendDirectInvoice(c)
-	case CmdAPIInfo:
-		return true, b.sendAPIInfo(c)
-	case CmdCacheStats:
-		return true, b.sendCacheStats(c)
-	case CmdCacheClear:
-		return true, b.clearAllCache(c)
-	case CmdActiveDownloads:
-		return true, b.sendActiveDownloads(c)
-	case CmdAdmin:
-		return true, b.sendAdminTransactionsMenu(c)
-	case "/test_subscription":
-		return true, b.testSubscription(c)
-	case "/test_channel":
-		return true, b.testChannel(c)
-	case "/config":
-		return true, b.showConfig(c)
-	case "/fix_channel":
-		return true, b.fixChannelConfig(c)
+	// Массив админских команд с их обработчиками
+	adminCommands := []struct {
+		command string
+		handler func(tele.Context) error
+	}{
+		{CmdTestInvoice, b.sendTestInvoice},
+		{CmdTestPreCheckout, func(c tele.Context) error {
+			return c.Send("Отправьте тестовый инвойс и попробуйте оплатить его для проверки PreCheckoutQuery")
+		}},
+		{CmdBotInfo, b.sendBotInfo},
+		{CmdTestDirect, b.sendDirectInvoice},
+		{CmdAPIInfo, b.sendAPIInfo},
+		{CmdCacheStats, b.sendCacheStats},
+		{CmdCacheClear, b.clearAllCache},
+		{CmdActiveDownloads, b.sendActiveDownloads},
+		{CmdAdmin, b.sendAdminTransactionsMenu},
+		{"/test_subscription", b.testSubscription},
+		{"/test_channel", b.testChannel},
+		{"/config", b.showConfig},
+		{"/fix_channel", b.fixChannelConfig},
+	}
+
+	// Проверяем точные совпадения команд
+	for _, cmd := range adminCommands {
+		if msg.Text == cmd.command {
+			return true, cmd.handler(c)
+		}
 	}
 
 	// Обработка команд с параметрами
