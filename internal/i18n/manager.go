@@ -1,19 +1,21 @@
 package i18n
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"text/template"
 
 	tele "gopkg.in/telebot.v4"
 )
 
 // Manager управляет локализацией
 type Manager struct {
-	translations map[string]map[string]string
+	translations map[string]map[string]interface{}
 	mutex        sync.RWMutex
 	fallbackLang string
 }
@@ -21,7 +23,7 @@ type Manager struct {
 // NewManager создает новый менеджер локализации
 func NewManager(fallbackLang string) *Manager {
 	return &Manager{
-		translations: make(map[string]map[string]string),
+		translations: make(map[string]map[string]interface{}),
 		fallbackLang: fallbackLang,
 	}
 }
@@ -58,7 +60,7 @@ func (m *Manager) LoadTranslations(translationsDir string) error {
 		}
 
 		// Парсим JSON
-		var translations map[string]string
+		var translations map[string]interface{}
 		if err := json.Unmarshal(data, &translations); err != nil {
 			return fmt.Errorf("ошибка парсинга JSON в файле %s: %v", filePath, err)
 		}
@@ -121,27 +123,71 @@ func (m *Manager) T(user *tele.User, key string, args ...interface{}) string {
 		}
 	}
 
-	text, exists := translations[key]
-	if !exists {
+	var textRaw interface{}
+	var ok bool
+	if textRaw, ok = translations[key]; !ok {
 		// Если ключ не найден в текущем языке, ищем в fallback
 		m.mutex.RLock()
 		fallbackTranslations := m.translations[m.fallbackLang]
 		m.mutex.RUnlock()
-
-		text, exists = fallbackTranslations[key]
-		if !exists {
-			// Отладочная информация
+		textRaw, ok = fallbackTranslations[key]
+		if !ok {
 			fmt.Printf("[I18N] Ошибка: ключ '%s' не найден в языке %s и fallback %s\n", key, lang, m.fallbackLang)
-			return key // Возвращаем ключ, если перевод не найден
+			return key
 		}
 	}
 
-	// Если есть аргументы для форматирования
-	if len(args) > 0 {
-		return fmt.Sprintf(text, args...)
+	// Если перевод — массив строк, склеиваем через \n
+	type templateData map[string]interface{}
+
+	tmplApply := func(tmplStr string, data templateData) string {
+		tmpl, err := template.New("").Parse(tmplStr)
+		if err != nil {
+			return tmplStr // если шаблон не парсится, возвращаем как есть
+		}
+		var buf bytes.Buffer
+		err = tmpl.Execute(&buf, data)
+		if err != nil {
+			return tmplStr // если ошибка подстановки, возвращаем как есть
+		}
+		return buf.String()
 	}
 
-	return text
+	switch v := textRaw.(type) {
+	case string:
+		if len(args) == 1 {
+			if data, ok := args[0].(map[string]interface{}); ok {
+				return tmplApply(v, data)
+			}
+		}
+		if len(args) > 0 {
+			return fmt.Sprintf(v, args...)
+		}
+		return v
+	case []interface{}:
+		lines := make([]string, 0, len(v))
+		for _, line := range v {
+			lineStr := fmt.Sprintf("%v", line)
+			if len(args) == 1 {
+				if data, ok := args[0].(map[string]interface{}); ok {
+					lineStr = tmplApply(lineStr, data)
+				}
+			}
+			lines = append(lines, lineStr)
+		}
+		joined := strings.Join(lines, "\n")
+		if len(args) > 0 && (len(args) != 1 || !isMapStringInterface(args[0])) {
+			return fmt.Sprintf(joined, args...)
+		}
+		return joined
+	default:
+		return fmt.Sprintf("[I18N] Некорректный тип перевода для ключа %s", key)
+	}
+}
+
+func isMapStringInterface(arg interface{}) bool {
+	_, ok := arg.(map[string]interface{})
+	return ok
 }
 
 // GetAvailableLanguages возвращает список доступных языков

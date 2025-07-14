@@ -334,6 +334,10 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 			}
 		}
 
+		// --- СТАТИСТИКА: увеличиваем счетчик скачиваний ---
+		_ = IncrementDownloads(b.db, c.Sender().ID)
+		// --- КОНЕЦ СТАТИСТИКИ ---
+
 		logger.LogPerformance("Полное скачивание и отправка видео", startTime)
 	}
 }

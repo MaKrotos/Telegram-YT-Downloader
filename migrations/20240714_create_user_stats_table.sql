@@ -1,0 +1,12 @@
+-- +goose Up
+CREATE TABLE IF NOT EXISTS user_stats (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL UNIQUE,
+    downloads BIGINT DEFAULT 0,
+    messages BIGINT DEFAULT 0,
+    last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- +goose Down
+DROP TABLE IF EXISTS user_stats; 

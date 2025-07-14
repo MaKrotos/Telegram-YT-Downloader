@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"YoutubeDownloader/internal/payment"
+	"database/sql"
 
 	tele "gopkg.in/telebot.v4"
 )
@@ -15,6 +16,25 @@ import (
 func (b *Bot) handleMessage(c tele.Context) error {
 	msg := c.Message()
 	logger := NewLogger("MESSAGE")
+
+	// --- СТАТИСТИКА ---
+	userID := msg.Sender.ID
+	_ = UpdateUserStats(b.db, userID)
+	_ = UpdateWeeklyUserActivity(b.db, userID)
+	_ = IncrementTotalUsersIfNew(b.db, userID)
+	_ = IncrementTotalMessages(b.db)
+	// --- КОНЕЦ СТАТИСТИКИ ---
+
+	// --- /help ---
+	if msg.Text == "/help" {
+		isAdmin := b.config.AdminID != "" && b.config.AdminID == toStr(msg.Sender.ID)
+		if isAdmin {
+			return c.Send(b.i18nManager.T(msg.Sender, "help_admin"))
+		} else {
+			return nil // обычному пользователю не отправлять ничего
+		}
+	}
+	// --- END /help ---
 
 	logger.Info("user_id=%d, text=%q", msg.Sender.ID, msg.Text)
 
@@ -73,6 +93,9 @@ func (b *Bot) handleAdminCommands(c tele.Context, msg *tele.Message) (bool, erro
 		{"/test_channel", b.testChannel},
 		{"/config", b.showConfig},
 		{"/fix_channel", b.fixChannelConfig},
+		{"/stats", b.sendTotalStats},
+		{"/userstats", b.sendUserStats},
+		{"/weeklystats", b.sendWeeklyStats},
 	}
 
 	// Проверяем точные совпадения команд
@@ -439,6 +462,73 @@ CHANNEL_USERNAME=ваш_канал_без_собачки
 `, currentChannel, channelUsername)
 
 	return c.Send(message)
+}
+
+// sendTotalStats отправляет админу общую статистику
+func (b *Bot) sendTotalStats(c tele.Context) error {
+	row := b.db.QueryRow(`SELECT total_users, total_downloads, total_messages, updated_at FROM total_stats WHERE id = 1`)
+	var users, downloads, messages int64
+	var updatedAt string
+	err := row.Scan(&users, &downloads, &messages, &updatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows || err.Error() == "sql: no rows in result set" {
+			return c.Send(b.i18nManager.T(c.Sender(), "stats_no_data"))
+		}
+		return c.Send(b.i18nManager.T(c.Sender(), "stats_error", map[string]interface{}{"Error": err.Error()}))
+	}
+	msg := b.i18nManager.T(c.Sender(), "stats_total", map[string]interface{}{
+		"Users":     users,
+		"Downloads": downloads,
+		"Messages":  messages,
+		"UpdatedAt": updatedAt,
+	})
+	return c.Send(msg)
+}
+
+// sendUserStats отправляет админу топ-10 пользователей по сообщениям и скачиваниям
+func (b *Bot) sendUserStats(c tele.Context) error {
+	rows, err := b.db.Query(`SELECT user_id, messages, downloads, last_active FROM user_stats ORDER BY messages DESC LIMIT 10`)
+	if err != nil {
+		if err == sql.ErrNoRows || err.Error() == "sql: no rows in result set" {
+			return c.Send(b.i18nManager.T(c.Sender(), "stats_no_data"))
+		}
+		return c.Send(b.i18nManager.T(c.Sender(), "stats_error", map[string]interface{}{"Error": err.Error()}))
+	}
+	defer rows.Close()
+	var list string
+	found := false
+	for rows.Next() {
+		var userID, messages, downloads int64
+		var lastActive string
+		_ = rows.Scan(&userID, &messages, &downloads, &lastActive)
+		list += b.i18nManager.T(c.Sender(), "stats_user_row", map[string]interface{}{
+			"UserID":     userID,
+			"Messages":   messages,
+			"Downloads":  downloads,
+			"LastActive": lastActive,
+		}) + "\n"
+		found = true
+	}
+	if !found {
+		return c.Send(b.i18nManager.T(c.Sender(), "stats_no_data"))
+	}
+	msg := b.i18nManager.T(c.Sender(), "stats_user_top", map[string]interface{}{"List": list})
+	return c.Send(msg)
+}
+
+// sendWeeklyStats отправляет админу количество уникальных пользователей за последние 7 дней
+func (b *Bot) sendWeeklyStats(c tele.Context) error {
+	row := b.db.QueryRow(`SELECT COUNT(DISTINCT user_id) FROM weekly_user_activity WHERE activity_date >= CURRENT_DATE - INTERVAL '7 days'`)
+	var count int64
+	err := row.Scan(&count)
+	if err != nil {
+		if err == sql.ErrNoRows || err.Error() == "sql: no rows in result set" {
+			return c.Send(b.i18nManager.T(c.Sender(), "stats_no_data"))
+		}
+		return c.Send(b.i18nManager.T(c.Sender(), "stats_error", map[string]interface{}{"Error": err.Error()}))
+	}
+	msg := b.i18nManager.T(c.Sender(), "stats_weekly", map[string]interface{}{"Count": count})
+	return c.Send(msg)
 }
 
 // Utility function
