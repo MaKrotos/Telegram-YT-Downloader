@@ -1,28 +1,61 @@
 # YoutubeDownloader Telegram Bot
 
-Telegram-бот для скачивания видео с YouTube, Shorts и TikTok по ссылке. Видео скачивается с помощью yt-dlp и отправляется пользователю прямо в Telegram. Поддерживает оплату через Telegram Stars и хранение пользователей в PostgreSQL.
+Telegram-бот для скачивания видео с YouTube, Shorts и TikTok по ссылке. Видео скачивается с помощью yt-dlp и отправляется пользователю прямо в Telegram. Поддерживает оплату через Telegram Stars, подписки, кэширование видео и хранение пользователей/статистики в PostgreSQL.
 
 ## Возможности
 
 - Скачивание видео с YouTube, Shorts и TikTok по ссылке
+- Кэширование скачанных видео (ускоряет повторные загрузки)
 - Отправка видео пользователю в Telegram
 - Оплата через Telegram Stars (разовое скачивание или подписка)
-- Хранение пользователей и подписок в PostgreSQL
+- Проверка подписки на канал для бесплатных загрузок
+- Хранение пользователей, транзакций, статистики и кэша в PostgreSQL
+- Админ-команды: статистика, управление кэшем, возвраты, тестовые платежи
+- Локализация (русский, английский, испанский, французский)
 - **Поддержка отправки больших файлов через локальный сервер Telegram Bot API**
+- Очистка старого кэша и временных файлов
 
-## Требования
+## Архитектура и структура internal/
 
-- Docker и docker-compose
-- PostgreSQL (поднимается через compose)
-- yt-dlp (уже включён в Docker-образ, для локального запуска на Windows используйте yt-dlp.exe)
-- ffmpeg (автоматически устанавливается в Docker-образе)
-- Полученные значения `api_id` и `api_hash` на https://my.telegram.org (раздел API development tools)
+- `internal/bot/` — основная логика Telegram-бота: обработка команд, сообщений, платежей, подписок, админ-функций, статистики, локализации, управления загрузками.
+- `internal/downloader/` — скачивание видео с помощью yt-dlp, поддержка разных стратегий качества, очистка временных файлов, диагностика файловой системы.
+- `internal/payment/` — работа с транзакциями: модели, сервисы, сохранение/чтение из БД, возвраты через Telegram Stars API.
+- `internal/storage/` — кэширование скачанных видео (video_cache), работа с кэшем через БД, очистка старых записей, статистика кэша.
+- `internal/i18n/` — локализация: менеджер переводов, поддержка нескольких языков, хранение переводов в JSON.
+- `internal/utils/` — вспомогательные функции: генерация случайных строк, очистка временных файлов, диагностика файловой системы и др.
+- `internal/config/` — конфигурация (расширяется при необходимости).
 
-## Архитектура
+## Миграции и структура БД
 
-Бот работает через локальный сервер Telegram Bot API (`aiogram/telegram-bot-api`), что позволяет отправлять большие файлы (до 2 ГБ и выше). Все запросы к Telegram идут через этот сервер, а не напрямую в облако Telegram. Это важно для обхода ограничений на размер файлов.
+Миграции находятся в папке `migrations/` и применяются через [goose](https://github.com/pressly/goose).
 
-В docker-compose сервисы общаются по внутренним именам (например, `telegram-bot-api:8081`).
+### Основные таблицы:
+- **users** — пользователи, поддержка premium_until (премиум-подписка)
+- **transactions** — все транзакции (user_id, amount, status, url, charge_id, payload, тип, причина, created_at, updated_at)
+- **video_cache** — кэш скачанных видео (url, telegram_file_id, created_at)
+- **total_stats** — агрегированная статистика (всего пользователей, загрузок, сообщений)
+- **user_stats** — индивидуальная статистика по пользователям
+- **weekly_user_activity** — недельная активность пользователей
+
+Пример применения миграций:
+```sh
+# В контейнере
+ docker-compose exec bot goose -dir ./migrations postgres "host=db user=ytuser password=ytpass dbname=ytbot sslmode=disable" up
+```
+
+## Переменные окружения
+
+- `TELEGRAM_BOT_TOKEN` — токен вашего Telegram-бота (**обязателен**)
+- `DB_HOST` — адрес сервиса PostgreSQL (по умолчанию `db`)
+- `DB_PORT` — порт PostgreSQL (по умолчанию `5432`)
+- `DB_USER` — пользователь БД (по умолчанию `ytuser`)
+- `DB_PASSWORD` — пароль пользователя БД (по умолчанию `ytpass`)
+- `DB_NAME` — имя базы данных (по умолчанию `ytbot`)
+- `CHANNEL_USERNAME` — username Telegram-канала для бесплатного доступа (опционально)
+- `MAX_DOWNLOAD_WORKERS` — максимальное количество одновременных загрузок видео (по умолчанию 3)
+- `TELEGRAM_API_URL` — адрес локального сервера Telegram Bot API (например, `http://telegram-bot-api:8081`, **обязателен**)
+- `TELEGRAM_API_ID` и `TELEGRAM_API_HASH` — для сервиса telegram-bot-api (получить на https://my.telegram.org)
+- `USE_OFFICIAL_API` — использовать официальный Telegram Bot API (true/false, по умолчанию false)
 
 ## Быстрый старт через Docker Compose
 
@@ -33,8 +66,6 @@ Telegram-бот для скачивания видео с YouTube, Shorts и Tik
    ```sh
    docker-compose up -d
    ```
-
-Контейнер бота будет скачан из Docker Hub: `makrotos/youtube_downloader_bot:latest`
 
 ## Пример docker-compose.yml с поддержкой больших файлов
 
@@ -94,79 +125,17 @@ volumes:
   telegram-bot-api-data:
 ```
 
-## Переменные окружения
-
-- `TELEGRAM_BOT_TOKEN` — токен вашего Telegram-бота (**обязателен**)
-- `DB_HOST` — адрес сервиса PostgreSQL (по умолчанию `db`)
-- `DB_PORT` — порт PostgreSQL (по умолчанию `5432`)
-- `DB_USER` — пользователь БД (по умолчанию `ytuser`)
-- `DB_PASSWORD` — пароль пользователя БД (по умолчанию `ytpass`)
-- `DB_NAME` — имя базы данных (по умолчанию `ytbot`)
-- `CHANNEL_USERNAME` — username Telegram-канала для бесплатного доступа (опционально)
-- `MAX_DOWNLOAD_WORKERS` — максимальное количество одновременных загрузок видео (по умолчанию 3)
-- `TELEGRAM_API_URL` — адрес локального сервера Telegram Bot API (например, `http://telegram-bot-api:8081`, **обязателен**)
-- `TELEGRAM_API_ID` и `TELEGRAM_API_HASH` — для сервиса telegram-bot-api (получить на https://my.telegram.org)
-
-## Сборка и запуск из исходников
-
-1. Клонируйте репозиторий и перейдите в папку проекта.
-2. Соберите Docker-образ:
-   ```sh
-   docker build -t youtube_downloader_bot .
-   ```
-3. Запустите через docker-compose, как указано выше.
-
-**В Dockerfile уже предусмотрена установка ffmpeg, wget и копирование yt-dlp_linux.**
-
-Для локального запуска на Windows используйте yt-dlp.exe (лежит в корне проекта).
-
-## Как запускать с пересборкой
-
-Чтобы контейнер пересобирался при каждом изменении кода, используйте команду:
-
-```
-docker compose up --build -d
-```
-
-или отдельно:
-```
-docker compose build
-
-docker compose up -d
-```
-
-Если хотите полностью отключить кэш:
-```
-docker compose build --no-cache
-```
-
-**Рекомендуется всегда использовать `--build`, чтобы не было проблем с устаревшим кодом.**
-
-## Используемые библиотеки
-
-- [telebot.v3](https://github.com/tucnak/telebot) — поддержка кастомного API endpoint (через поле URL в настройках)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — скачивание видео
-- [ffmpeg](https://ffmpeg.org/) — обработка и склейка аудио/видео
-- [goose](https://github.com/pressly/goose) — миграции БД
-
-## Миграции базы данных
-
-Для управления схемой БД используется [goose](https://github.com/pressly/goose):
-
-- Миграции хранятся в папке `migrations/`.
-- Пример применения миграций:
-  ```sh
-  docker-compose exec bot goose -dir ./migrations postgres "host=db user=ytuser password=ytpass dbname=ytbot sslmode=disable" up
-  ```
-
 ## Структура проекта
 
 - `main.go` — точка входа
-- `internal/bot/` — логика Telegram-бота
-- `internal/downloader/` — скачивание видео
-- `internal/payment/` — транзакции и подписки
+- `internal/bot/` — логика Telegram-бота (команды, платежи, подписки, статистика, локализация, загрузки)
+- `internal/downloader/` — скачивание видео, очистка временных файлов
+- `internal/payment/` — транзакции, возвраты, работа с БД
+- `internal/storage/` — кэш видео, статистика кэша
+- `internal/i18n/` — локализация и переводы
+- `internal/utils/` — утилиты и вспомогательные функции
 - `migrations/` — миграции PostgreSQL
-- `Dockerfile` — инструкция для сборки (если нужно)
+- `Dockerfile` — инструкция для сборки
 - `docker-compose.yml` — запуск бота, БД и локального Bot API
 - `yt-dlp_linux` — бинарник yt-dlp для Linux (используется в Docker)
 - `yt-dlp.exe` — бинарник yt-dlp для Windows (опционально)
