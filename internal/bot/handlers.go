@@ -112,6 +112,12 @@ func (b *Bot) handleAdminCommands(c tele.Context, msg *tele.Message) (bool, erro
 	if strings.HasPrefix(msg.Text, CmdRefund) {
 		return true, b.handleRefundCommand(c, msg.Text)
 	}
+	if strings.HasPrefix(msg.Text, "/cache_clear_url") {
+		return true, b.handleCacheClearURLCommand(c, msg.Text)
+	}
+	if strings.HasPrefix(msg.Text, "/force_download") {
+		return true, b.handleForceDownloadCommand(c, msg.Text)
+	}
 
 	return false, nil
 }
@@ -210,6 +216,45 @@ func (b *Bot) handleRefundCommand(c tele.Context, text string) error {
 	}
 
 	return b.handleAdminRefundWithUserID(c, chargeID, userID)
+}
+
+// handleCacheClearURLCommand обрабатывает команду очистки кэша для конкретного URL
+func (b *Bot) handleCacheClearURLCommand(c tele.Context, text string) error {
+	parts := strings.Fields(text)
+	if len(parts) < 2 {
+		return c.Send("Укажите URL после команды: /cache_clear_url <URL>")
+	}
+
+	url := strings.TrimSpace(parts[1])
+
+	// Очищаем кэш для указанного URL
+	err := ClearCacheForURL(b.db, url)
+	if err != nil {
+		return c.Send(fmt.Sprintf("Ошибка очистки кэша: %v", err))
+	}
+
+	return c.Send(fmt.Sprintf("✅ Кэш очищен для URL: %s", url))
+}
+
+// handleForceDownloadCommand обрабатывает команду принудительного скачивания
+func (b *Bot) handleForceDownloadCommand(c tele.Context, text string) error {
+	parts := strings.Fields(text)
+	if len(parts) < 2 {
+		return c.Send("Укажите URL после команды: /force_download <URL>")
+	}
+
+	url := strings.TrimSpace(parts[1])
+
+	// Очищаем кэш для указанного URL
+	err := ClearCacheForURL(b.db, url)
+	if err != nil {
+		return c.Send(fmt.Sprintf("Ошибка очистки кэша: %v", err))
+	}
+
+	// Запускаем принудительное скачивание
+	go b.sendVideo(c, url, "", 0)
+
+	return c.Send(fmt.Sprintf("🔄 Принудительное скачивание запущено для URL: %s", url))
 }
 
 // handleCallback обрабатывает callback запросы

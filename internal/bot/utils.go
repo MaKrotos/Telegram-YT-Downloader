@@ -74,25 +74,26 @@ func GetCachedVideo(db interface{}, cacheKey string) (interface{}, error) {
 		return nil, fmt.Errorf("неверный тип БД")
 	}
 
-	// Получаем видео из кэша по URL
+	// Ищем только по полному URL
+	fmt.Printf("[CACHE] Ищем в кэше по URL: %s\n", cacheKey)
 	cache, err := storage.GetVideoFromCache(sqlDB, cacheKey)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка получения видео из кэша: %v", err)
 	}
 
-	if cache == nil {
-		return nil, nil // Видео не найдено в кэше
+	if cache != nil {
+		fmt.Printf("[CACHE] Найдено видео в кэше\n")
+		// Создаем объект CachedVideo с file_id от Telegram
+		cachedVideo := &CachedVideo{
+			FilePath: cache.TelegramFileID, // Это file_id от Telegram, а не путь к файлу
+			Title:    "Кэшированное видео",
+			FileSize: 0, // Размер неизвестен для кэшированного видео
+			Duration: "00:00:00",
+		}
+		return cachedVideo, nil
 	}
 
-	// Создаем объект CachedVideo с file_id от Telegram
-	cachedVideo := &CachedVideo{
-		FilePath: cache.TelegramFileID, // Это file_id от Telegram, а не путь к файлу
-		Title:    "Кэшированное видео",
-		FileSize: 0, // Размер неизвестен для кэшированного видео
-		Duration: "00:00:00",
-	}
-
-	return cachedVideo, nil
+	return nil, nil // Видео не найдено в кэше
 }
 
 // SaveVideoToCache сохраняет видео в кэш
@@ -102,7 +103,8 @@ func SaveVideoToCache(db interface{}, cacheKey, fileID string) error {
 		return fmt.Errorf("неверный тип БД")
 	}
 
-	// Сохраняем file_id от Telegram в кэш
+	// Сохраняем только по полному URL
+	fmt.Printf("[CACHE] Сохраняем в кэш URL: %s с file_id: %s\n", cacheKey, fileID)
 	err := storage.SaveVideoToCache(sqlDB, cacheKey, fileID)
 	if err != nil {
 		return fmt.Errorf("ошибка сохранения видео в кэш: %v", err)
@@ -256,4 +258,41 @@ func CheckUserSubscription(bot interface{}, channelUsername string, userID int64
 		fmt.Printf("[SUBSCRIPTION] Неизвестный статус пользователя %d в канале %s: %s\n", userID, channelUsername, chatMember.Role)
 		return false, fmt.Errorf("неизвестный статус пользователя: %s", chatMember.Role)
 	}
+}
+
+// DeleteVideoFromCache удаляет видео из кэша
+func DeleteVideoFromCache(db interface{}, cacheKey string) error {
+	sqlDB, ok := db.(*sql.DB)
+	if !ok {
+		return fmt.Errorf("неверный тип БД")
+	}
+
+	// Удаляем по полному URL
+	fmt.Printf("[CACHE] Удаляем из кэша URL: %s\n", cacheKey)
+	err := storage.DeleteVideoFromCache(sqlDB, cacheKey)
+	if err != nil {
+		return fmt.Errorf("ошибка удаления видео из кэша: %v", err)
+	}
+
+	return nil
+}
+
+// ClearCacheForURL очищает кэш для конкретного URL
+func ClearCacheForURL(db interface{}, url string) error {
+	sqlDB, ok := db.(*sql.DB)
+	if !ok {
+		return fmt.Errorf("неверный тип БД")
+	}
+
+	fmt.Printf("[CACHE] Очищаем кэш для URL: %s\n", url)
+
+	// Удаляем по полному URL
+	err := storage.DeleteVideoFromCache(sqlDB, url)
+	if err != nil {
+		fmt.Printf("[CACHE] Ошибка удаления URL: %v\n", err)
+	} else {
+		fmt.Printf("[CACHE] Удален URL из кэша\n")
+	}
+
+	return nil
 }

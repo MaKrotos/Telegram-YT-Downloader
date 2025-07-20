@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"YoutubeDownloader/internal/payment"
-	"YoutubeDownloader/internal/storage"
 
 	tele "gopkg.in/telebot.v4"
 )
@@ -261,16 +260,26 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 
 			// Отправляем кэшированное видео напрямую
 			logger.Info("Отправляем кэшированное видео с file_id: %s", cached.FilePath)
-			_, err := b.api.Send(c.Sender(), video)
+			sentMessage, err := b.api.Send(c.Sender(), video)
 			if err != nil {
 				logger.Error("Ошибка отправки кэшированного видео: %v", err)
 				// Если отправка по file_id не удалась, удаляем из кэша и скачиваем заново
 				logger.Info("Удаляем недействительную запись из кэша")
-				storage.DeleteVideoFromCache(b.db, url)
+				DeleteVideoFromCache(b.db, url)
 				// Продолжаем со скачиванием
 			} else {
 				logger.Info("Кэшированное видео успешно отправлено!")
 				logger.LogPerformance("Отправка кэшированного видео", startTime)
+
+				// Дополнительная проверка - если получили file_id, сравниваем с кэшированным
+				if sentMessage != nil && sentMessage.Video != nil && sentMessage.Video.FileID != "" {
+					if sentMessage.Video.FileID != cached.FilePath {
+						logger.Warning("File_id изменился! Кэшированный: %s, Полученный: %s", cached.FilePath, sentMessage.Video.FileID)
+						logger.Info("Обновляем file_id в кэше")
+						SaveVideoToCache(b.db, url, sentMessage.Video.FileID)
+					}
+				}
+
 				return
 			}
 		}
@@ -316,6 +325,15 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 		// Сохраняем file_id в кэш, если видео было отправлено
 		if sentMessage != nil && sentMessage.Video != nil && sentMessage.Video.FileID != "" {
 			logger.Info("Сохраняем file_id в кэш: %s для URL: %s", sentMessage.Video.FileID, url)
+
+			// Логируем все доступные поля видео
+			logger.Info("Video info - FileID: %s, FileSize: %d, Duration: %d, Width: %d, Height: %d",
+				sentMessage.Video.FileID,
+				sentMessage.Video.FileSize,
+				sentMessage.Video.Duration,
+				sentMessage.Video.Width,
+				sentMessage.Video.Height)
+
 			err = SaveVideoToCache(b.db, url, sentMessage.Video.FileID)
 			if err != nil {
 				logger.Warning("Ошибка сохранения file_id в кэш: %v", err)
