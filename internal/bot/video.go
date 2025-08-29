@@ -2,15 +2,20 @@ package bot
 
 import (
 	"bytes"
+	"crypto/md5"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"YoutubeDownloader/internal/payment"
+	"YoutubeDownloader/internal/storage"
 
 	tele "gopkg.in/telebot.v4"
 )
@@ -144,15 +149,15 @@ func (b *Bot) sendSubscribeInvoice(c tele.Context, period string) error {
 	case "month":
 		title = b.i18nManager.T(c.Sender(), "subscription_month")
 		description = b.i18nManager.T(c.Sender(), "subscription_month_desc")
-		amount = 5
+		amount = 100
 	case "year":
 		title = b.i18nManager.T(c.Sender(), "subscription_year")
 		description = b.i18nManager.T(c.Sender(), "subscription_year_desc")
-		amount = 50
+		amount = 500
 	case "forever":
 		title = b.i18nManager.T(c.Sender(), "subscription_forever")
 		description = b.i18nManager.T(c.Sender(), "subscription_forever_desc")
-		amount = 100
+		amount = 1000
 	default:
 		return c.Send(b.i18nManager.T(c.Sender(), "unknown_subscription"))
 	}
@@ -243,15 +248,20 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 	_ = b.downloadManager.StartDownload(url, requestID, c.Sender().ID)
 	defer b.downloadManager.FinishDownload(url, nil)
 
-	// Проверяем кэш
-	logger.Info("Проверяем кэш для URL: %s", url)
-	cachedVideo, err := GetCachedVideo(b.db, url)
+	// Создать уникальный ключ кэша на основе URL
+	cacheKey := url
+
+	// Проверяем кэш для конкретного URL
+	logger.Info("Проверяем кэш для URL: %s (ключ: %s)", url, cacheKey)
+	cachedVideo, err := GetCachedVideo(b.db, cacheKey)
 	if err != nil {
 		logger.Warning("Ошибка получения из кэша: %v", err)
-	} else if cachedVideo != nil {
+	}
+
+	if cachedVideo != nil {
 		// Приведение типа для работы с кэшированным видео
 		if cached, ok := cachedVideo.(*CachedVideo); ok {
-			logger.Info("Найдено видео в кэше с file_id: %s", cached.FilePath)
+			logger.Info("Найдено видео в кэше с file_id: %s для URL: %s", cached.FilePath, url)
 
 			// Для кэшированного видео используем file_id от Telegram
 			video := &tele.Video{
@@ -259,26 +269,38 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 			}
 
 			// Отправляем кэшированное видео напрямую
-			logger.Info("Отправляем кэшированное видео с file_id: %s", cached.FilePath)
+			logger.Info("Отправляем кэшированное видео с file_id: %s для URL: %s", cached.FilePath, url)
 			sentMessage, err := b.api.Send(c.Sender(), video)
 			if err != nil {
 				logger.Error("Ошибка отправки кэшированного видео: %v", err)
 				// Если отправка по file_id не удалась, удаляем из кэша и скачиваем заново
-				logger.Info("Удаляем недействительную запись из кэша")
-				DeleteVideoFromCache(b.db, url)
+				logger.Info("Удаляем недействительную запись из кэша для URL: %s", url)
+				DeleteVideoFromCache(b.db, cacheKey)
 				// Продолжаем со скачиванием
 			} else {
-				logger.Info("Кэшированное видео успешно отправлено!")
+				logger.Info("Кэшированное видео успешно отправлено для URL: %s!", url)
 				logger.LogPerformance("Отправка кэшированного видео", startTime)
 
 				// Дополнительная проверка - если получили file_id, сравниваем с кэшированным
 				if sentMessage != nil && sentMessage.Video != nil && sentMessage.Video.FileID != "" {
 					if sentMessage.Video.FileID != cached.FilePath {
 						logger.Warning("File_id изменился! Кэшированный: %s, Полученный: %s", cached.FilePath, sentMessage.Video.FileID)
-						logger.Info("Обновляем file_id в кэше")
-						SaveVideoToCache(b.db, url, sentMessage.Video.FileID)
+						logger.Info("Обновляем file_id в кэше для URL: %s", url)
+						SaveVideoToCache(b.db, cacheKey, sentMessage.Video.FileID)
 					}
 				}
+
+				// Обновляем статистику транзакции
+				if chargeID != "" {
+					err = UpdateTransactionStatus(b.db, chargeID, "completed")
+					if err != nil {
+						logger.Error("Ошибка обновления статуса транзакции: %v", err)
+					}
+				}
+
+				// --- СТАТИСТИКА: увеличиваем счетчик скачиваний ---
+				_ = IncrementDownloads(b.db, c.Sender().ID)
+				// --- КОНЕЦ СТАТИСТИКИ ---
 
 				return
 			}
@@ -290,7 +312,9 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 
 	// Скачиваем видео
 	logger.Info("Скачиваем видео: %s", url)
-	videoPath, err := DownloadVideo(url)
+
+	// Создаем уникальный путь для каждого скачивания
+	uniqueVideoPath, err := DownloadVideo(url)
 	if err != nil {
 		logger.Error("Ошибка скачивания видео: %v", err)
 		b.downloadManager.FinishDownload(url, err)
@@ -298,8 +322,26 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 		return
 	}
 
+	// Проверяем, что файл действительно существует и уникален
+	if uniqueVideoPath == "" {
+		logger.Error("Получен пустой путь к видео")
+		b.downloadManager.FinishDownload(url, fmt.Errorf("пустой путь к видео"))
+		c.Send(b.i18nManager.T(c.Sender(), "download_error", "пустой путь к видео"))
+		return
+	}
+
+	// Проверяем, что файл существует
+	if _, err := os.Stat(uniqueVideoPath); os.IsNotExist(err) {
+		logger.Error("Файл не существует по пути: %s", uniqueVideoPath)
+		b.downloadManager.FinishDownload(url, fmt.Errorf("файл не существует"))
+		c.Send(b.i18nManager.T(c.Sender(), "download_error", "файл не существует"))
+		return
+	}
+
+	logger.Info("Видео скачано по пути: %s", uniqueVideoPath)
+
 	// Получаем информацию о видео
-	videoInfo, err := GetVideoInfo(videoPath)
+	videoInfo, err := GetVideoInfo(uniqueVideoPath)
 	if err != nil {
 		logger.Error("Ошибка получения информации о видео: %v", err)
 		b.downloadManager.FinishDownload(url, err)
@@ -309,9 +351,41 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 
 	// Отправляем видео
 	if _, ok := videoInfo.(*VideoInfo); ok {
-		video := &tele.Video{
-			File: tele.FromDisk(videoPath),
+		fileSize := videoInfo.(*VideoInfo).FileSize
+		duration := videoInfo.(*VideoInfo).Duration
+
+		logger.Info("Информация о скачанном видео: URL=%s, размер=%d байт, длительность=%s", url, fileSize, duration)
+
+		// ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: проверяем, не является ли это дубликатом уже скачанного файла
+		// Получаем хеш файла для проверки уникальности
+		fileHash, err := getFileHash(uniqueVideoPath)
+		if err != nil {
+			logger.Warning("Не удалось получить хеш файла: %v", err)
+		} else {
+			logger.Info("Хеш файла для URL %s: %s", url, fileHash)
+
+			// Проверяем, есть ли уже файл с таким хешем в кэше
+			existingURL, err := getURLByFileHash(b.db, fileHash)
+			if err != nil {
+				logger.Warning("Ошибка проверки дубликата по хешу: %v", err)
+			} else if existingURL != "" && existingURL != url {
+				logger.Warning("ОБНАРУЖЕН ДУБЛИКАТ! Файл для URL %s уже существует для URL %s", url, existingURL)
+				c.Send(fmt.Sprintf("⚠️ Обнаружен дубликат файла! Возможно, YouTube возвращает одинаковое видео для разных ссылок.\n\nПопробуйте:\n1. Очистить кэш: /clear_all_cache\n2. Использовать другие ссылки\n3. Проверить содержимое кэша: /show_cache"))
+				return
+			}
 		}
+
+		// Проверяем размер файла
+		if fileSize > 50*1024*1024 { // 50 МБ
+			logger.Warning("Видео слишком большое (%d байт), может не отправиться через Telegram API", fileSize)
+			c.Send(b.i18nManager.T(c.Sender(), "file_too_large"))
+		}
+
+		video := &tele.Video{
+			File: tele.FromDisk(uniqueVideoPath),
+		}
+
+		logger.Info("Пытаемся отправить видео размером %d байт для URL: %s", fileSize, url)
 
 		// Отправляем видео напрямую через API для получения file_id
 		sentMessage, err := b.api.Send(c.Sender(), video)
@@ -321,6 +395,8 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 			c.Send(b.i18nManager.T(c.Sender(), "send_error", err))
 			return
 		}
+
+		logger.Info("Видео успешно отправлено для URL: %s! sentMessage: %+v", url, sentMessage)
 
 		// Сохраняем file_id в кэш, если видео было отправлено
 		if sentMessage != nil && sentMessage.Video != nil && sentMessage.Video.FileID != "" {
@@ -334,14 +410,24 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 				sentMessage.Video.Width,
 				sentMessage.Video.Height)
 
-			err = SaveVideoToCache(b.db, url, sentMessage.Video.FileID)
+			// Сохраняем также хеш файла для проверки дубликатов
+			if fileHash != "" {
+				err = saveFileHashToCache(b.db, url, fileHash)
+				if err != nil {
+					logger.Warning("Ошибка сохранения хеша файла в кэш: %v", err)
+				} else {
+					logger.Info("Хеш файла сохранен в кэш для URL: %s", url)
+				}
+			}
+
+			err = SaveVideoToCache(b.db, cacheKey, sentMessage.Video.FileID)
 			if err != nil {
 				logger.Warning("Ошибка сохранения file_id в кэш: %v", err)
 			} else {
-				logger.Info("File_id успешно сохранен в кэш")
+				logger.Info("File_id успешно сохранен в кэш для URL: %s", url)
 			}
 		} else {
-			logger.Warning("Не удалось получить file_id для сохранения в кэш")
+			logger.Warning("Не удалось получить file_id для сохранения в кэш для URL: %s", url)
 		}
 
 		// Обновляем статистику транзакции
@@ -357,6 +443,16 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 		// --- КОНЕЦ СТАТИСТИКИ ---
 
 		logger.LogPerformance("Полное скачивание и отправка видео", startTime)
+	}
+
+	// ПРИНУДИТЕЛЬНАЯ ОЧИСТКА: удаляем временный файл после отправки
+	if uniqueVideoPath != "" {
+		logger.Info("Удаляем временный файл: %s", uniqueVideoPath)
+		if err := os.Remove(uniqueVideoPath); err != nil {
+			logger.Warning("Не удалось удалить временный файл %s: %v", uniqueVideoPath, err)
+		} else {
+			logger.Info("Временный файл успешно удален: %s", uniqueVideoPath)
+		}
 	}
 }
 
@@ -417,4 +513,222 @@ func (b *Bot) sendError(c tele.Context, userMsg string, err error, extraInfo ...
 	logger.LogErrorWithContext(userMsg, err, info)
 
 	c.Send(userMsg)
+}
+
+// showCacheContents показывает содержимое кэша
+func (b *Bot) showCacheContents(c tele.Context) error {
+	logger := NewLogger("CACHE_VIEW")
+
+	// Получаем статистику кэша
+	count, err := storage.GetCacheStats(b.db)
+	if err != nil {
+		logger.Error("Ошибка получения статистики кэша: %v", err)
+		return c.Send(fmt.Sprintf("Ошибка получения статистики кэша: %v", err))
+	}
+
+	// Получаем все записи кэша
+	rows, err := b.db.Query(`SELECT url, telegram_file_id, created_at FROM video_cache ORDER BY created_at DESC LIMIT 20`)
+	if err != nil {
+		logger.Error("Ошибка получения содержимого кэша: %v", err)
+		return c.Send(fmt.Sprintf("Ошибка получения содержимого кэша: %v", err))
+	}
+	defer rows.Close()
+
+	var cacheInfo strings.Builder
+	cacheInfo.WriteString(fmt.Sprintf("📊 **Статистика кэша:** %d записей\n\n", count))
+
+	found := false
+	for rows.Next() {
+		var url, fileID, createdAt string
+		err := rows.Scan(&url, &fileID, &createdAt)
+		if err != nil {
+			continue
+		}
+
+		// Обрезаем длинные URL для читаемости
+		shortURL := url
+		if len(shortURL) > 50 {
+			shortURL = shortURL[:47] + "..."
+		}
+
+		// Обрезаем fileID для читаемости
+		shortFileID := fileID
+		if len(shortFileID) > 20 {
+			shortFileID = shortFileID[:17] + "..."
+		}
+
+		cacheInfo.WriteString(fmt.Sprintf("🔗 **URL:** %s\n", shortURL))
+		cacheInfo.WriteString(fmt.Sprintf("📁 **File ID:** %s\n", shortFileID))
+		cacheInfo.WriteString(fmt.Sprintf("⏰ **Создан:** %s\n", createdAt))
+		cacheInfo.WriteString("---\n")
+		found = true
+	}
+
+	if !found {
+		cacheInfo.WriteString("Кэш пуст")
+	}
+
+	return c.Send(cacheInfo.String())
+}
+
+// getFileHash получает MD5 хеш файла
+func getFileHash(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("ошибка открытия файла: %w", err)
+	}
+	defer file.Close()
+
+	hash := md5.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("ошибка чтения файла: %w", err)
+	}
+
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+// getURLByFileHash получает URL по хешу файла из кэша
+func getURLByFileHash(db *sql.DB, fileHash string) (string, error) {
+	query := `SELECT url FROM file_hash_cache WHERE file_hash = $1 LIMIT 1`
+
+	var url string
+	err := db.QueryRow(query, fileHash).Scan(&url)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil // Хеш не найден
+		}
+		return "", fmt.Errorf("ошибка поиска URL по хешу: %w", err)
+	}
+
+	return url, nil
+}
+
+// saveFileHashToCache сохраняет хеш файла в кэш
+func saveFileHashToCache(db *sql.DB, url, fileHash string) error {
+	query := `INSERT INTO file_hash_cache (url, file_hash, created_at) VALUES ($1, $2, NOW()) 
+			  ON CONFLICT (url) DO UPDATE SET 
+			  file_hash = EXCLUDED.file_hash,
+			  created_at = NOW()`
+
+	_, err := db.Exec(query, url, fileHash)
+	if err != nil {
+		return fmt.Errorf("ошибка сохранения хеша файла в кэш: %w", err)
+	}
+
+	return nil
+}
+
+// checkFileDuplicates проверяет дубликаты файлов в кэше
+func (b *Bot) checkFileDuplicates(c tele.Context) error {
+	logger := NewLogger("DUPLICATES")
+
+	// Получаем все дубликаты по хешу файла
+	rows, err := b.db.Query(`
+		SELECT fhc1.url as url1, fhc1.file_hash, fhc1.created_at as created1,
+		       fhc2.url as url2, fhc2.created_at as created2
+		FROM file_hash_cache fhc1
+		JOIN file_hash_cache fhc2 ON fhc1.file_hash = fhc2.file_hash 
+			AND fhc1.url < fhc2.url
+		ORDER BY fhc1.created_at DESC
+	`)
+	if err != nil {
+		logger.Error("Ошибка проверки дубликатов: %v", err)
+		return c.Send(fmt.Sprintf("Ошибка проверки дубликатов: %v", err))
+	}
+	defer rows.Close()
+
+	var duplicatesInfo strings.Builder
+	duplicatesInfo.WriteString("🔍 **Проверка дубликатов файлов**\n\n")
+
+	found := false
+	for rows.Next() {
+		var url1, fileHash, created1, url2, created2 string
+		err := rows.Scan(&url1, &fileHash, &created1, &url2, &created2)
+		if err != nil {
+			continue
+		}
+
+		// Обрезаем длинные URL для читаемости
+		shortURL1 := url1
+		if len(shortURL1) > 40 {
+			shortURL1 = shortURL1[:37] + "..."
+		}
+
+		shortURL2 := url2
+		if len(shortURL2) > 40 {
+			shortURL2 = shortURL2[:37] + "..."
+		}
+
+		// Обрезаем хеш для читаемости
+		shortHash := fileHash
+		if len(shortHash) > 16 {
+			shortHash = shortHash[:16] + "..."
+		}
+
+		duplicatesInfo.WriteString(fmt.Sprintf("⚠️ **ДУБЛИКАТ НАЙДЕН!**\n"))
+		duplicatesInfo.WriteString(fmt.Sprintf("🔗 **URL 1:** %s\n", shortURL1))
+		duplicatesInfo.WriteString(fmt.Sprintf("🔗 **URL 2:** %s\n", shortURL2))
+		duplicatesInfo.WriteString(fmt.Sprintf("📁 **Хеш:** %s\n", shortHash))
+		duplicatesInfo.WriteString(fmt.Sprintf("⏰ **Создан 1:** %s\n", created1))
+		duplicatesInfo.WriteString(fmt.Sprintf("⏰ **Создан 2:** %s\n", created2))
+		duplicatesInfo.WriteString("---\n")
+		found = true
+	}
+
+	if !found {
+		duplicatesInfo.WriteString("✅ Дубликаты файлов не найдены!")
+	} else {
+		duplicatesInfo.WriteString("\n💡 **Рекомендации:**\n")
+		duplicatesInfo.WriteString("• Очистите кэш: /clear_all_cache\n")
+		duplicatesInfo.WriteString("• Проверьте содержимое кэша: /show_cache\n")
+		duplicatesInfo.WriteString("• Возможно, YouTube возвращает одинаковые файлы для разных ссылок")
+	}
+
+	return c.Send(duplicatesInfo.String())
+}
+
+// cleanupTempFiles очищает все временные файлы
+func (b *Bot) cleanupTempFiles(c tele.Context) error {
+	logger := NewLogger("CLEANUP_TEMP")
+
+	tmpDir := "./tmp"
+	logger.Info("Очищаем временные файлы в директории: %s", tmpDir)
+
+	// Получаем список всех файлов в tmp директории
+	files, err := os.ReadDir(tmpDir)
+	if err != nil {
+		logger.Error("Ошибка чтения директории %s: %v", tmpDir, err)
+		return c.Send(fmt.Sprintf("Ошибка чтения директории временных файлов: %v", err))
+	}
+
+	deletedCount := 0
+	totalSize := int64(0)
+
+	for _, file := range files {
+		if !file.IsDir() {
+			filePath := filepath.Join(tmpDir, file.Name())
+
+			// Получаем размер файла
+			fileInfo, err := os.Stat(filePath)
+			if err != nil {
+				logger.Warning("Не удалось получить информацию о файле %s: %v", filePath, err)
+				continue
+			}
+
+			// Удаляем файл
+			if err := os.Remove(filePath); err != nil {
+				logger.Warning("Не удалось удалить файл %s: %v", filePath, err)
+			} else {
+				logger.Info("Удален временный файл: %s (размер: %d байт)", file.Name(), fileInfo.Size())
+				deletedCount++
+				totalSize += fileInfo.Size()
+			}
+		}
+	}
+
+	message := fmt.Sprintf("🧹 **Очистка временных файлов завершена!**\n\n📊 **Результат:**\n• Удалено файлов: %d\n• Освобождено места: %d байт (%.2f МБ)\n\n💡 Теперь каждое новое скачивание будет использовать уникальные пути!",
+		deletedCount, totalSize, float64(totalSize)/1024/1024)
+
+	logger.Info("Очистка завершена: удалено %d файлов, освобождено %d байт", deletedCount, totalSize)
+	return c.Send(message)
 }

@@ -22,6 +22,20 @@ func GenerateRequestID() string {
 	return fmt.Sprintf("%x", b)
 }
 
+// isKnownURL проверяет, является ли URL известным (уже обрабатывался ранее)
+func isKnownURL(db interface{}, url string) bool {
+	sqlDB, ok := db.(*sql.DB)
+	if !ok {
+		return false
+	}
+
+	cache, err := storage.GetVideoFromCache(sqlDB, url)
+	if err != nil {
+		return false
+	}
+	return cache != nil
+}
+
 // UpdateTransactionStatus обновляет статус транзакции
 func UpdateTransactionStatus(db interface{}, chargeID, status string) error {
 	sqlDB, ok := db.(*sql.DB)
@@ -74,15 +88,16 @@ func GetCachedVideo(db interface{}, cacheKey string) (interface{}, error) {
 		return nil, fmt.Errorf("неверный тип БД")
 	}
 
-	// Ищем только по полному URL
-	fmt.Printf("[CACHE] Ищем в кэше по URL: %s\n", cacheKey)
+	// Ищем по URL
+	fmt.Printf("[CACHE] Ищем в кэше по ключу: %s\n", cacheKey)
 	cache, err := storage.GetVideoFromCache(sqlDB, cacheKey)
 	if err != nil {
+		fmt.Printf("[CACHE] Ошибка получения из кэша: %v\n", err)
 		return nil, fmt.Errorf("ошибка получения видео из кэша: %v", err)
 	}
 
 	if cache != nil {
-		fmt.Printf("[CACHE] Найдено видео в кэше\n")
+		fmt.Printf("[CACHE] Найдено видео в кэше для URL: %s с file_id: %s\n", cache.URL, cache.TelegramFileID)
 		// Создаем объект CachedVideo с file_id от Telegram
 		cachedVideo := &CachedVideo{
 			FilePath: cache.TelegramFileID, // Это file_id от Telegram, а не путь к файлу
@@ -93,6 +108,7 @@ func GetCachedVideo(db interface{}, cacheKey string) (interface{}, error) {
 		return cachedVideo, nil
 	}
 
+	fmt.Printf("[CACHE] Видео не найдено в кэше для ключа: %s\n", cacheKey)
 	return nil, nil // Видео не найдено в кэше
 }
 
@@ -103,20 +119,24 @@ func SaveVideoToCache(db interface{}, cacheKey, fileID string) error {
 		return fmt.Errorf("неверный тип БД")
 	}
 
-	// Сохраняем только по полному URL
-	fmt.Printf("[CACHE] Сохраняем в кэш URL: %s с file_id: %s\n", cacheKey, fileID)
+	// Сохраняем по URL
+	fmt.Printf("[CACHE] Сохраняем в кэш ключ: %s с file_id: %s\n", cacheKey, fileID)
 	err := storage.SaveVideoToCache(sqlDB, cacheKey, fileID)
 	if err != nil {
 		return fmt.Errorf("ошибка сохранения видео в кэш: %v", err)
 	}
 
+	fmt.Printf("[CACHE] Успешно сохранено в кэш: URL=%s, file_id=%s\n", cacheKey, fileID)
 	return nil
 }
 
 // DownloadVideo скачивает видео
 func DownloadVideo(url string) (string, error) {
-	// Используем реальную функцию скачивания из пакета downloader
-	return downloader.DownloadYouTubeVideo(url)
+	// Создаем уникальный идентификатор для каждого скачивания
+	requestID := GenerateRequestID()
+
+	// Используем реальную функцию скачивания из пакета downloader с уникальным ID
+	return downloader.DownloadYouTubeVideoWithUserID(url, 0, requestID)
 }
 
 // GetVideoInfo получает информацию о видео
@@ -267,8 +287,8 @@ func DeleteVideoFromCache(db interface{}, cacheKey string) error {
 		return fmt.Errorf("неверный тип БД")
 	}
 
-	// Удаляем по полному URL
-	fmt.Printf("[CACHE] Удаляем из кэша URL: %s\n", cacheKey)
+	// Удаляем по хешу URL
+	fmt.Printf("[CACHE] Удаляем из кэша ключ: %s\n", cacheKey)
 	err := storage.DeleteVideoFromCache(sqlDB, cacheKey)
 	if err != nil {
 		return fmt.Errorf("ошибка удаления видео из кэша: %v", err)
@@ -284,14 +304,16 @@ func ClearCacheForURL(db interface{}, url string) error {
 		return fmt.Errorf("неверный тип БД")
 	}
 
-	fmt.Printf("[CACHE] Очищаем кэш для URL: %s\n", url)
+	// Используем URL напрямую для очистки кэша
+	cacheKey := url
+	fmt.Printf("[CACHE] Очищаем кэш для URL: %s (ключ: %s)\n", url, cacheKey)
 
-	// Удаляем по полному URL
-	err := storage.DeleteVideoFromCache(sqlDB, url)
+	// Удаляем по хешу URL
+	err := storage.DeleteVideoFromCache(sqlDB, cacheKey)
 	if err != nil {
-		fmt.Printf("[CACHE] Ошибка удаления URL: %v\n", err)
+		fmt.Printf("[CACHE] Ошибка удаления ключа: %v\n", err)
 	} else {
-		fmt.Printf("[CACHE] Удален URL из кэша\n")
+		fmt.Printf("[CACHE] Удален ключ из кэша\n")
 	}
 
 	return nil

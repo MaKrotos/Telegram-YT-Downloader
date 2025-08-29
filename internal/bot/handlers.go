@@ -96,6 +96,10 @@ func (b *Bot) handleAdminCommands(c tele.Context, msg *tele.Message) (bool, erro
 		{"/stats", b.sendTotalStats},
 		{"/userstats", b.sendUserStats},
 		{"/weeklystats", b.sendWeeklyStats},
+		{"/clear_all_cache", b.clearAllCache},        // Добавляем дублирующую команду для удобства
+		{"/show_cache", b.showCacheContents},         // Добавляем команду для просмотра кэша
+		{"/check_duplicates", b.checkFileDuplicates}, // Добавляем команду для проверки дубликатов
+		{"/cleanup_temp", b.cleanupTempFiles},        // Добавляем команду для очистки временных файлов
 	}
 
 	// Проверяем точные совпадения команд
