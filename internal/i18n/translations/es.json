@@ -30,7 +30,7 @@
   "download_error": "❌ Error al descargar video: %s",
   "video_sent_successfully": "✅ ¡Video enviado exitosamente!",
   "file_too_large": "⚠️ El video es demasiado grande para enviar a través de la API de Telegram. Intenta con otro video.",
-  "duplicate_video_warning": "⚠️ Advertencia: este video ya fue descargado anteriormente. Diferentes enlaces pueden llevar al mismo contenido.",
+  
   "payment_required": "🎬 Para descargar el video, necesitas pagar 1 ⭐",
   "pay_1_star": "💳 Pagar 1 ⭐",
   "subscribe_free": "📢 SUSCRIBIRSE AL CANAL (GRATIS)",

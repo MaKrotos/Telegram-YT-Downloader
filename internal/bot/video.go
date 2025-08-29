@@ -2,8 +2,6 @@ package bot
 
 import (
 	"bytes"
-	"crypto/md5"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -356,25 +354,6 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 
 		logger.Info("Информация о скачанном видео: URL=%s, размер=%d байт, длительность=%s", url, fileSize, duration)
 
-		// ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: проверяем, не является ли это дубликатом уже скачанного файла
-		// Получаем хеш файла для проверки уникальности
-		fileHash, err := getFileHash(uniqueVideoPath)
-		if err != nil {
-			logger.Warning("Не удалось получить хеш файла: %v", err)
-		} else {
-			logger.Info("Хеш файла для URL %s: %s", url, fileHash)
-
-			// Проверяем, есть ли уже файл с таким хешем в кэше
-			existingURL, err := getURLByFileHash(b.db, fileHash)
-			if err != nil {
-				logger.Warning("Ошибка проверки дубликата по хешу: %v", err)
-			} else if existingURL != "" && existingURL != url {
-				logger.Warning("ОБНАРУЖЕН ДУБЛИКАТ! Файл для URL %s уже существует для URL %s", url, existingURL)
-				c.Send(fmt.Sprintf("⚠️ Обнаружен дубликат файла! Возможно, YouTube возвращает одинаковое видео для разных ссылок.\n\nПопробуйте:\n1. Очистить кэш: /clear_all_cache\n2. Использовать другие ссылки\n3. Проверить содержимое кэша: /show_cache"))
-				return
-			}
-		}
-
 		// Проверяем размер файла
 		if fileSize > 50*1024*1024 { // 50 МБ
 			logger.Warning("Видео слишком большое (%d байт), может не отправиться через Telegram API", fileSize)
@@ -409,16 +388,6 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 				sentMessage.Video.Duration,
 				sentMessage.Video.Width,
 				sentMessage.Video.Height)
-
-			// Сохраняем также хеш файла для проверки дубликатов
-			if fileHash != "" {
-				err = saveFileHashToCache(b.db, url, fileHash)
-				if err != nil {
-					logger.Warning("Ошибка сохранения хеша файла в кэш: %v", err)
-				} else {
-					logger.Info("Хеш файла сохранен в кэш для URL: %s", url)
-				}
-			}
 
 			err = SaveVideoToCache(b.db, cacheKey, sentMessage.Video.FileID)
 			if err != nil {
@@ -569,122 +538,6 @@ func (b *Bot) showCacheContents(c tele.Context) error {
 	}
 
 	return c.Send(cacheInfo.String())
-}
-
-// getFileHash получает MD5 хеш файла
-func getFileHash(filePath string) (string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", fmt.Errorf("ошибка открытия файла: %w", err)
-	}
-	defer file.Close()
-
-	hash := md5.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", fmt.Errorf("ошибка чтения файла: %w", err)
-	}
-
-	return fmt.Sprintf("%x", hash.Sum(nil)), nil
-}
-
-// getURLByFileHash получает URL по хешу файла из кэша
-func getURLByFileHash(db *sql.DB, fileHash string) (string, error) {
-	query := `SELECT url FROM file_hash_cache WHERE file_hash = $1 LIMIT 1`
-
-	var url string
-	err := db.QueryRow(query, fileHash).Scan(&url)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", nil // Хеш не найден
-		}
-		return "", fmt.Errorf("ошибка поиска URL по хешу: %w", err)
-	}
-
-	return url, nil
-}
-
-// saveFileHashToCache сохраняет хеш файла в кэш
-func saveFileHashToCache(db *sql.DB, url, fileHash string) error {
-	query := `INSERT INTO file_hash_cache (url, file_hash, created_at) VALUES ($1, $2, NOW()) 
-			  ON CONFLICT (url) DO UPDATE SET 
-			  file_hash = EXCLUDED.file_hash,
-			  created_at = NOW()`
-
-	_, err := db.Exec(query, url, fileHash)
-	if err != nil {
-		return fmt.Errorf("ошибка сохранения хеша файла в кэш: %w", err)
-	}
-
-	return nil
-}
-
-// checkFileDuplicates проверяет дубликаты файлов в кэше
-func (b *Bot) checkFileDuplicates(c tele.Context) error {
-	logger := NewLogger("DUPLICATES")
-
-	// Получаем все дубликаты по хешу файла
-	rows, err := b.db.Query(`
-		SELECT fhc1.url as url1, fhc1.file_hash, fhc1.created_at as created1,
-		       fhc2.url as url2, fhc2.created_at as created2
-		FROM file_hash_cache fhc1
-		JOIN file_hash_cache fhc2 ON fhc1.file_hash = fhc2.file_hash 
-			AND fhc1.url < fhc2.url
-		ORDER BY fhc1.created_at DESC
-	`)
-	if err != nil {
-		logger.Error("Ошибка проверки дубликатов: %v", err)
-		return c.Send(fmt.Sprintf("Ошибка проверки дубликатов: %v", err))
-	}
-	defer rows.Close()
-
-	var duplicatesInfo strings.Builder
-	duplicatesInfo.WriteString("🔍 **Проверка дубликатов файлов**\n\n")
-
-	found := false
-	for rows.Next() {
-		var url1, fileHash, created1, url2, created2 string
-		err := rows.Scan(&url1, &fileHash, &created1, &url2, &created2)
-		if err != nil {
-			continue
-		}
-
-		// Обрезаем длинные URL для читаемости
-		shortURL1 := url1
-		if len(shortURL1) > 40 {
-			shortURL1 = shortURL1[:37] + "..."
-		}
-
-		shortURL2 := url2
-		if len(shortURL2) > 40 {
-			shortURL2 = shortURL2[:37] + "..."
-		}
-
-		// Обрезаем хеш для читаемости
-		shortHash := fileHash
-		if len(shortHash) > 16 {
-			shortHash = shortHash[:16] + "..."
-		}
-
-		duplicatesInfo.WriteString(fmt.Sprintf("⚠️ **ДУБЛИКАТ НАЙДЕН!**\n"))
-		duplicatesInfo.WriteString(fmt.Sprintf("🔗 **URL 1:** %s\n", shortURL1))
-		duplicatesInfo.WriteString(fmt.Sprintf("🔗 **URL 2:** %s\n", shortURL2))
-		duplicatesInfo.WriteString(fmt.Sprintf("📁 **Хеш:** %s\n", shortHash))
-		duplicatesInfo.WriteString(fmt.Sprintf("⏰ **Создан 1:** %s\n", created1))
-		duplicatesInfo.WriteString(fmt.Sprintf("⏰ **Создан 2:** %s\n", created2))
-		duplicatesInfo.WriteString("---\n")
-		found = true
-	}
-
-	if !found {
-		duplicatesInfo.WriteString("✅ Дубликаты файлов не найдены!")
-	} else {
-		duplicatesInfo.WriteString("\n💡 **Рекомендации:**\n")
-		duplicatesInfo.WriteString("• Очистите кэш: /clear_all_cache\n")
-		duplicatesInfo.WriteString("• Проверьте содержимое кэша: /show_cache\n")
-		duplicatesInfo.WriteString("• Возможно, YouTube возвращает одинаковые файлы для разных ссылок")
-	}
-
-	return c.Send(duplicatesInfo.String())
 }
 
 // cleanupTempFiles очищает все временные файлы
