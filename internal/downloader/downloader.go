@@ -11,6 +11,7 @@ import (
 	"strings"
 )
 
+// DownloadYouTubeVideo скачивает видео с YouTube
 func DownloadYouTubeVideo(url string) (string, error) {
 	tmpDir := "./tmp"
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
@@ -93,7 +94,7 @@ func DownloadYouTubeVideo(url string) (string, error) {
 	return "", fmt.Errorf("все стратегии скачивания не удались. Последняя ошибка: %v", lastError)
 }
 
-// Функция для скачивания YouTube видео с уникальным идентификатором пользователя
+// DownloadYouTubeVideoWithUserID скачивает видео с YouTube с уникальным идентификатором пользователя
 func DownloadYouTubeVideoWithUserID(url string, userID int64, requestID string) (string, error) {
 	tmpDir := "./tmp"
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
@@ -177,7 +178,7 @@ func DownloadYouTubeVideoWithUserID(url string, userID int64, requestID string) 
 	return "", fmt.Errorf("все стратегии скачивания не удались для пользователя %d (request %s). Последняя ошибка: %v", userID, requestID, lastError)
 }
 
-// Функция для скачивания YouTube видео с уникальным идентификатором пользователя и URL хешем
+// DownloadYouTubeVideoWithUserIDAndURL скачивает видео с YouTube с уникальным идентификатором пользователя и URL хешем
 func DownloadYouTubeVideoWithUserIDAndURL(url string, userID int64, requestID string, urlHash string) (string, error) {
 	tmpDir := "./tmp"
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {

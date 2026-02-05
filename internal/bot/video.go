@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"YoutubeDownloader/internal/downloader"
 	"YoutubeDownloader/internal/payment"
 	"YoutubeDownloader/internal/storage"
 
@@ -205,6 +206,11 @@ func (b *Bot) sendVideoWithRetry(c tele.Context, video *tele.Video, url string, 
 func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int) {
 	logger := NewLogger("VIDEO")
 	startTime := time.Now()
+
+	// Проверяем обновления yt-dlp перед началом скачивания
+	if err := downloader.CheckAndUpdateYTDLp(b.db); err != nil {
+		logger.Warning("Не удалось проверить обновления yt-dlp: %v", err)
+	}
 
 	logger.Info("Начинаем скачивание видео: %s", url)
 
