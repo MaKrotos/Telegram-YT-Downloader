@@ -203,7 +203,8 @@ func (b *Bot) sendVideoWithRetry(c tele.Context, video *tele.Video, url string, 
 }
 
 // sendVideo обрабатывает скачивание и отправку видео
-func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int) {
+// replyToMsg - если не nil, видео будет отправлено как ответ на это сообщение
+func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int, replyToMsg *tele.Message) {
 	logger := NewLogger("VIDEO")
 	startTime := time.Now()
 
@@ -274,7 +275,13 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 
 			// Отправляем кэшированное видео напрямую
 			logger.Info("Отправляем кэшированное видео с file_id: %s для URL: %s", cached.FilePath, url)
-			sentMessage, err := b.api.Send(c.Sender(), video)
+			var sentMessage *tele.Message
+			var err error
+			if replyToMsg != nil {
+				sentMessage, err = b.api.Send(c.Chat(), video, &tele.SendOptions{ReplyTo: replyToMsg})
+			} else {
+				sentMessage, err = b.api.Send(c.Chat(), video)
+			}
 			if err != nil {
 				logger.Error("Ошибка отправки кэшированного видео: %v", err)
 				// Если отправка по file_id не удалась, удаляем из кэша и скачиваем заново
@@ -373,7 +380,12 @@ func (b *Bot) sendVideo(c tele.Context, url string, chargeID string, amount int)
 		logger.Info("Пытаемся отправить видео размером %d байт для URL: %s", fileSize, url)
 
 		// Отправляем видео напрямую через API для получения file_id
-		sentMessage, err := b.api.Send(c.Sender(), video)
+		var sentMessage *tele.Message
+		if replyToMsg != nil {
+			sentMessage, err = b.api.Send(c.Chat(), video, &tele.SendOptions{ReplyTo: replyToMsg})
+		} else {
+			sentMessage, err = b.api.Send(c.Chat(), video)
+		}
 		if err != nil {
 			logger.Error("Ошибка отправки видео: %v", err)
 			b.downloadManager.FinishDownload(url, err)

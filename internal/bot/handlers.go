@@ -152,9 +152,24 @@ func (b *Bot) handleURLMessage(c tele.Context, msg *tele.Message, isAdmin bool) 
 
 	logger.Info("Обрабатываем URL: %s для пользователя %d (админ: %t)", url, msg.Sender.ID, isAdmin)
 
+	// Определяем тип чата и настраиваем ответ
+	chatType := msg.Chat.Type
+	var replyToMsg *tele.Message
+	if chatType == "channel" {
+		// В канале удаляем исходное сообщение
+		c.Delete()
+		replyToMsg = nil
+	} else if chatType == "group" || chatType == "supergroup" {
+		// В группе отвечаем на сообщение
+		replyToMsg = msg
+	} else {
+		// В личных сообщениях не отвечаем
+		replyToMsg = nil
+	}
+
 	if isAdmin {
 		logger.Info("Пользователь %d является админом — скачивание бесплатно", msg.Sender.ID)
-		go b.sendVideo(c, url, "", 0)
+		go b.sendVideo(c, url, "", 0, replyToMsg)
 		return nil
 	}
 
@@ -176,7 +191,7 @@ func (b *Bot) handleURLMessage(c tele.Context, msg *tele.Message, isAdmin bool) 
 
 	if isSub {
 		logger.Info("Пользователь %d подписан на канал %s — скачивание бесплатно", msg.Sender.ID, b.config.ChannelUsername)
-		go b.sendVideo(c, url, "", 0)
+		go b.sendVideo(c, url, "", 0, replyToMsg)
 		return nil
 	}
 
@@ -255,7 +270,7 @@ func (b *Bot) handleForceDownloadCommand(c tele.Context, text string) error {
 	}
 
 	// Запускаем принудительное скачивание
-	go b.sendVideo(c, url, "", 0)
+	go b.sendVideo(c, url, "", 0, nil)
 
 	return c.Send(fmt.Sprintf("🔄 Принудительное скачивание запущено для URL: %s", url))
 }
@@ -400,7 +415,7 @@ func (b *Bot) processPayment(c tele.Context, paymentInfo *tele.Payment) error {
 // handleVideoPayment обрабатывает платеж за видео
 func (b *Bot) handleVideoPayment(c tele.Context, payload, chargeID string, amount int) error {
 	url := strings.TrimPrefix(payload, "video|")
-	go b.sendVideo(c, url, chargeID, amount)
+	go b.sendVideo(c, url, chargeID, amount, nil)
 	return c.Send(b.i18nManager.T(c.Sender(), "payment_accepted"))
 }
 
