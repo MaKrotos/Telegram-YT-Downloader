@@ -166,7 +166,21 @@
     "/active_downloads — активные скачивания",
     "/cache_stats — статистика кэша",
     "/cache_clear — очистить кэш",
+    "/cache_clean <days> — очистить старый кэш",
+    "/cache_clear_url <URL> — очистить кэш для URL",
+    "/show_cache — показать содержимое кэша",
+    "/clear_all_cache — очистить весь кэш (алиас)",
+    "/cleanup_temp — очистить временные файлы",
     "/config — показать конфиг",
-    "/refund <charge_id> — возврат платежа"
+    "/fix_channel — исправить конфигурацию канала",
+    "/test_invoice — отправить тестовый инвойс",
+    "/test_precheckout — инструкции по тестированию",
+    "/test_direct — отправить прямой инвойс",
+    "/test_subscription — тест подписки",
+    "/test_channel — тест канала",
+    "/refund <charge_id> — возврат платежа",
+    "/force_download <URL> — принудительное скачивание минуя кэш",
+    "/update_ytdlp — принудительное обновление yt-dlp до последней версии",
+    "/admin — показать меню транзакций админа"
   ]
-} 
+}

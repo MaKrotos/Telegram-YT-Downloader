@@ -3,7 +3,7 @@
   "no_url_found": "Aucun lien trouvé. Veuillez envoyer un lien vidéo.",
   "invalid_days": "Le nombre de jours doit être un nombre",
   "invalid_user_id": "user_id doit être un nombre",
-  "invalid_charge_id": "Spécifiez charge_id après /refund",
+  "invalid_charge_id": "Spécifiez charge_id après /refend",
   "invalid_days_format": "Spécifiez le nombre de jours après /cache_clean",
   "refund_success": "Remboursement effectué pour la transaction : %s",
   "refund_attempt": "Tentative de remboursement effectuée pour la transaction : %s",
@@ -160,7 +160,21 @@
     "/active_downloads — téléchargements actifs",
     "/cache_stats — stats du cache",
     "/cache_clear — vider le cache",
+    "/cache_clean <days> — nettoyer le cache ancien",
+    "/cache_clear_url <URL> — nettoyer le cache pour URL",
+    "/show_cache — afficher le contenu du cache",
+    "/clear_all_cache — vider tout le cache (alias)",
+    "/cleanup_temp — nettoyer les fichiers temporaires",
     "/config — afficher la config",
-    "/refund <charge_id> — remboursement"
+    "/fix_channel — corriger la configuration du canal",
+    "/test_invoice — envoyer une facture de test",
+    "/test_precheckout — instructions de test",
+    "/test_direct — envoyer une facture directe",
+    "/test_subscription — test d'abonnement",
+    "/test_channel — test de canal",
+    "/refund <charge_id> — remboursement",
+    "/force_download <URL> — téléchargement forcé en ignorant le cache",
+    "/update_ytdlp — mise à jour forcée de yt-dlp vers la dernière version",
+    "/admin — afficher le menu des transactions administrateur"
   ]
-} 
+}

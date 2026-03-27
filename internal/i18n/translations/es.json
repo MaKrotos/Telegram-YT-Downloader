@@ -160,7 +160,21 @@
     "/active_downloads — descargas activas",
     "/cache_stats — estadísticas de caché",
     "/cache_clear — limpiar caché",
+    "/cache_clean <days> — limpiar caché antiguo",
+    "/cache_clear_url <URL> — limpiar caché para URL",
+    "/show_cache — mostrar contenido del caché",
+    "/clear_all_cache — limpiar todo el caché (alias)",
+    "/cleanup_temp — limpiar archivos temporales",
     "/config — mostrar configuración",
-    "/refund <charge_id> — reembolso de pago"
+    "/fix_channel — corregir configuración del canal",
+    "/test_invoice — enviar factura de prueba",
+    "/test_precheckout — instrucciones de prueba",
+    "/test_direct — enviar factura directa",
+    "/test_subscription — prueba de suscripción",
+    "/test_channel — prueba de canal",
+    "/refund <charge_id> — reembolso de pago",
+    "/force_download <URL> — descarga forzada omitiendo caché",
+    "/update_ytdlp — actualización forzada de yt-dlp a la última versión",
+    "/admin — mostrar menú de transacciones de administrador"
   ]
-} 
+}

@@ -160,7 +160,21 @@
     "/active_downloads — active downloads",
     "/cache_stats — cache stats",
     "/cache_clear — clear cache",
+    "/cache_clean <days> — clean old cache",
+    "/cache_clear_url <URL> — clear cache for URL",
+    "/show_cache — show cache contents",
+    "/clear_all_cache — clear all cache (alias)",
+    "/cleanup_temp — cleanup temporary files",
     "/config — show config",
-    "/refund <charge_id> — refund payment"
+    "/fix_channel — fix channel config",
+    "/test_invoice — send test invoice",
+    "/test_precheckout — testing instructions",
+    "/test_direct — send direct invoice",
+    "/test_subscription — test subscription",
+    "/test_channel — test channel",
+    "/refund <charge_id> — refund payment",
+    "/force_download <URL> — force download bypassing cache",
+    "/update_ytdlp — force update yt-dlp to latest version",
+    "/admin — show admin transactions menu"
   ]
-} 
+}
