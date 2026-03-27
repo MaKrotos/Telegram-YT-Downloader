@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"YoutubeDownloader/internal/downloader"
 	"YoutubeDownloader/internal/payment"
 	"YoutubeDownloader/internal/storage"
 
@@ -351,4 +352,18 @@ func (b *Bot) showConfig(c tele.Context) error {
 
 	logger.Info("Показана конфигурация бота")
 	return c.Send(info)
+}
+
+// forceUpdateYTDLp принудительно обновляет yt-dlp до последней версии
+func (b *Bot) forceUpdateYTDLp(c tele.Context) error {
+	logger := NewLogger("YTDLP_UPDATE")
+	logger.Info("Принудительное обновление yt-dlp...")
+
+	if err := downloader.ForceUpdateYTDLp(b.db); err != nil {
+		logger.Error("Ошибка принудительного обновления yt-dlp: %v", err)
+		return c.Send(fmt.Sprintf("❌ Ошибка обновления yt-dlp: %v", err))
+	}
+
+	logger.Info("yt-dlp успешно обновлен")
+	return c.Send("✅ yt-dlp успешно обновлен до последней версии!")
 }

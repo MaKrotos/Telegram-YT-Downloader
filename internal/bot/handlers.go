@@ -88,6 +88,7 @@ func (b *Bot) handleAdminCommands(c tele.Context, msg *tele.Message) (bool, erro
 		{CmdCacheStats, b.sendCacheStats},
 		{CmdCacheClear, b.clearAllCache},
 		{CmdActiveDownloads, b.sendActiveDownloads},
+		{CmdUpdateYTDLp, b.forceUpdateYTDLp},
 		{CmdAdmin, b.sendAdminTransactionsMenu},
 		{"/test_subscription", b.testSubscription},
 		{"/test_channel", b.testChannel},

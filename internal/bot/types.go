@@ -100,6 +100,7 @@ const (
 	CmdCacheClear      = "/cache_clear"
 	CmdActiveDownloads = "/active_downloads"
 	CmdRefund          = "/refund"
+	CmdUpdateYTDLp     = "/update_ytdlp"
 )
 
 // Callback constants

@@ -87,6 +87,28 @@ func CheckAndUpdateYTDLp(db *sql.DB) error {
 	return nil
 }
 
+// ForceUpdateYTDLp принудительно обновляет yt-dlp до последней версии, игнорируя проверки
+func ForceUpdateYTDLp(db *sql.DB) error {
+	// Получаем информацию о последней версии с GitHub
+	latestRelease, err := getLatestReleaseInfo()
+	if err != nil {
+		return fmt.Errorf("ошибка получения информации о последней версии: %w", err)
+	}
+
+	// Скачиваем и обновляем файлы yt-dlp
+	if err := downloadAndUpdateYTDLp(latestRelease); err != nil {
+		return fmt.Errorf("ошибка обновления yt-dlp: %w", err)
+	}
+
+	// Обновляем запись в БД
+	if err := updateVersionRecord(db, latestRelease.TagName); err != nil {
+		return fmt.Errorf("ошибка обновления записи в БД: %w", err)
+	}
+
+	fmt.Printf("[YT-DLP UPDATER] yt-dlp принудительно обновлен до версии %s\n", latestRelease.TagName)
+	return nil
+}
+
 // shouldCheckForUpdate проверяет, прошло ли достаточно времени с последней проверки
 func shouldCheckForUpdate(db *sql.DB) (bool, error) {
 	row := db.QueryRow("SELECT last_checked FROM ytdlp_versions ORDER BY last_checked DESC LIMIT 1")
